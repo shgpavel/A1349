@@ -1,0 +1,64 @@
+\documentclass{report}
+
+\def\letus{%
+    \mathord{\setbox0=\hbox{$\exists$}%
+             \hbox{\kern 0.125\wd0%
+                   \vbox to \ht0{%
+                      \hrule width 0.75\wd0%
+                      \vfill%
+                      \hrule width 0.75\wd0}%
+                   \vrule height \ht0%
+                   \kern 0.125\wd0}%
+           }%
+}
+
+\usepackage{graphicx}
+\usepackage{cancel}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage[T2A,T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{ragged2e}
+
+\usepackage{setspace}
+\setstretch{1.8}
+\everymath{\displaystyle}
+\usepackage{nopageno}
+\usepackage[utf8]{inputenc}
+\usepackage[english,russian]{babel}
+\usepackage[a4paper, left=0.3cm, top=0.5cm, right=0.4cm, bottom=0.5cm]{geometry}
+
+\begin{document}
+
+\vspace*{2.5cm}
+\begin{center}
+\text{\textbf{САНКТ-ПЕТЕРБУРГСКИЙ ГОСУДАРСТВЕННЫЙ УНИВЕРСИТЕТ}}
+\end{center}
+
+\begin{center}
+\text{\fontsize{16}{6}\selectfont Учебная практика, научно-исследовательская работа}
+\end{center}
+
+\vspace*{0.5cm}
+\begin{center}
+\text{\fontsize{12}{3}\selectfont Шаго Павел Евгеньевич}
+
+\text{\fontsize{9}{3}\selectfont 22.Б07-ПУ, 01.03.02 Прикладная математика и информатика}
+
+\text{\fontsize{12}{6}\selectfont Название работы}
+
+\vspace*{0.5cm}
+
+\text{\fontsize{12}{6}\selectfont Научный руководитель}
+
+\text{\fontsize{12}{6}\selectfont к.ф.-м.н., доцент Корхов В. В.}
+\end{center}
+
+
+\vspace*{16.5cm}
+\begin{center}
+\today
+\end{center}
+
+\end{document}
