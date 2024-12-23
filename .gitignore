@@ -1,3 +1,7 @@
 cache
-theory/s1/*.log
-theory/s1/*.aux
+
+theory/s1/main.fdb_latexmk
+theory/s1/main.fls
+theory/s1/main.aux
+theory/s1/main.log
+theory/s1/main.toc
