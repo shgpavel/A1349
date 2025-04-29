@@ -1,0 +1,180 @@
+\documentclass[12pt, oneside]{book}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T2A,T1]{fontenc}
+\usepackage{ragged2e}
+
+\usepackage{setspace}
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\everymath{\displaystyle}
+\usepackage{tocloft}
+\cftsetindents{section}{1em}{2em}
+\renewcommand\cfttoctitlefont{\hfill\Large\bfseries}
+\renewcommand\cftaftertoctitle{\hfill\mbox{}}
+\setlength{\cftbeforesecskip}{0.1cm}
+\setlength{\cftbeforesubsecskip}{0.1cm}
+\setlength{\cftbeforetoctitleskip}{0cm}
+\setlength{\cftaftertoctitleskip}{0.4cm}
+\setcounter{tocdepth}{2}
+
+
+\usepackage[english,russian]{babel}
+\usepackage[a4paper, left=3cm, top=2cm, right=1.5cm, bottom=2cm]{geometry}
+
+\def\letus{%
+    \mathord{\setbox0=\hbox{$\exists$}%
+             \hbox{\kern 0.125\wd0%
+                   \vbox to \ht0{%
+                      \hrule width 0.75\wd0%
+                      \vfill%
+                      \hrule width 0.75\wd0}%
+                   \vrule height \ht0%
+                   \kern 0.125\wd0}%
+           }%
+}
+
+\makeatletter
+\renewcommand{\@makeschapterhead}[1]{%
+  \vspace*{0\p@}
+  {\parindent \z@ \center
+    \normalfont
+    \LARGE \bfseries #1\par\nobreak
+    \addcontentsline{toc}{chapter}{#1}
+    \vskip 10\p@
+}}
+\makeatother
+
+\makeatletter
+\renewcommand{\chapter}{%
+  \if@openright\cleardoublepage\else\clearpage\fi
+  \thispagestyle{plain}
+  \global\@topnum\z@
+  \@afterindentfalse
+  \secdef\@chapter\@schapter}
+
+\renewcommand{\@makechapterhead}[1]{%
+  \vspace*{0\p@}
+  {\parindent \z@ \raggedright
+    \normalfont
+    \LARGE \bfseries \thechapter\quad #1\par\nobreak
+    \vskip 20\p@
+  }}
+\makeatother
+
+\makeatletter
+\newcommand{\custompagestyle}{%
+  \begingroup
+  \renewcommand{\ps@plain}{%
+    \renewcommand{\@oddfoot}{\hfil\thepage\hfil}
+    \renewcommand{\@evenfoot}{\hfil\thepage\hfil}
+    \renewcommand{\@oddhead}{}
+    \renewcommand{\@evenhead}{}
+  }%
+  \pagestyle{plain}
+}
+\makeatother
+
+\newenvironment{customquote}
+  {\list{}{\leftmargin=0pt
+          \rightmargin=0pt
+          \topsep=0pt
+          \partopsep=0pt
+          \parsep=2pt
+          \itemsep=0pt
+        }%
+   \normalfont\relax
+  \item\relax}
+  {\endlist}
+
+\begin{document}
+\thispagestyle{empty}
+\begin{center}
+\textbf{\large САНКТ-ПЕТЕРБУРГСКИЙ ГОСУДАРСТВЕННЫЙ УНИВЕРСИТЕТ} \\[2cm]
+
+\text{\large ОТЧЕТ О НАУЧНО-ИССЛЕДОВАТЕЛЬСКОЙ РАБОТЕ} \\[2cm]
+
+\text{\Large Шаго Павел Евгеньевич} \\[0.3cm]
+
+\text{22.Б07-ПУ, 01.03.02 Прикладная математика и информатика} \\[1cm]
+
+\textbf{\Large Планировщики 2} \\[3cm]
+
+\text{\large Научный руководитель} \\[0.3cm]
+\large{к.ф.-м.н., доцент Корхов В. В.} \\[10cm]
+\text{Санкт-Петербург}\\ \today
+
+\end{center}
+
+\newpage
+\custompagestyle
+\setcounter{page}{2}
+\renewcommand{\contentsname}{Содержание}
+\tableofcontents
+
+\newpage
+\chapter*{Введение}
+\begin{quote}
+\quad Данная работа продолжает исследования связаные с планировщиками
+и фокусируется на конкретных реализациях, архитектурных решениях, сравнительном
+анализе.
+\end{quote}
+
+
+\chapter{Earliest eligible virtual deadline first (EEVDF)}
+\section{Введение}
+\begin{quote}
+\bf EEVDF \normalfont --- планировщик потоков в ядре Linux,
+который в 2023 году (с версии ядра Linux 6.6) вытеснил Completely
+Fair Scheduler (CFS) в качестве планировщика по умолчанию.
+
+CFS на тот момент использовался в ядре 16 лет, то есть ровно половину
+всего времени существования ядра Linux. С работой CFS косвенно сталкивался любой
+человек из-за широкого
+Это решение поражает, казалось бы
+CFS за такой срок уже доведен до идеала, поэтому причина замены 
+
+Более полное базовое описание дано в главе 6 (раздел 3[6.3]) первого отчета о
+научно-исследовательской работе[1].
+
+В прошлом отчете данный планировщик потоков был упомянут,
+но не рассмотрен 
+в настоящей работе он рассматривается подробно.
+\end{quote}
+\section{Рассмотр причин отказа от }
+
+\renewcommand{\bibname}{\large СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ}
+\begin{thebibliography}{9}
+  \vspace*{0.3cm}
+  \bibitem{1}
+  Joseph Y-T. Leung\ Handbook of Scheduling: Algorithms, Models, and Performance Analysis CRC Press 2004
+  \bibitem{2}
+  Andrew S. Tanenbaum, Herbert Bos\ MODERN OPERATING SYSTEMS Pearson
+  Education 2023
+  \bibitem{3}
+  Dror G. Feitelson, Larry Rudolph\ Job Scheduling
+  Strategies for Parallel Processing Springer 2001
+  \bibitem{4}
+  William Stallings\ Operating Systems: Internals and
+  Design Principles Pearson Education 2020
+  \bibitem{5}
+  Michael J. Morrison\ Resource Management and Scheduling
+  in Multitasking Operating Systems CRC Press 2017
+  \bibitem{6}
+  Arden Durell\ Go Scheduler Internals 2018
+  \bibitem{7}
+  Thomas E. Anderson, Brian N. Bershad, Edward D. Lazowska, 
+  Henry M. Levy\ Scheduler activations: effective kernel
+  support for the user-level management of parallelism ACM 1992
+  \bibitem{8}
+  Xiaomin Zhu, Yabing Zha, Ling Liu, Peng JiaoGeneral\
+  Framework for Task Scheduling and Resource Provisioning
+  in Cloud Computing Systems IEEE 2016
+\end{thebibliography}
+
+\end{document}
