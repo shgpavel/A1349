@@ -4,6 +4,7 @@
 \usepackage{amsmath}
 \usepackage{amsfonts}
 \usepackage{amssymb}
+\usepackage{hyperref}
 
 \usepackage[utf8]{inputenc}
 \usepackage[T2A,T1]{fontenc}
@@ -146,35 +147,62 @@ CFS за такой срок уже доведен до идеала, поэто
 но не рассмотрен 
 в настоящей работе он рассматривается подробно.
 \end{quote}
-\section{Рассмотр причин отказа от }
+\section{Рассмотр причин отказа от CFS}
+
+\chapter{sched\_ext}
+\section{Введение}
+\begin{quote}
+  \bf sched\_ext \normalfont (scheduler extensions) --- инфраструктура ядра
+  Linux позволяющая описывать планировщик набором BPF программ
+  (поэтому sched\_ext также называют BPF scheduler).
+  BPF (Berkeley Packet Filter) --- это такой специальный байт-код позволяющий 
+  добавлять функциональность в ядро из пользовательского пространства, т.е. 
+  исполнять код находящийся в непривилегированном пользовательском пространстве 
+  в привилегированных режимах работы ядра. Изначально разработан для
+  добавления функциональности сетевым картам, но с тех пор сильно поменялся,
+  а конкретнее текущий BPF это синоним eBPF (extended BPF), изначальный же
+  вариант сейчас называется cBPF (classic BPF) и практически не используется.
+  BPF предоставляет ограниченный набор функций и спроектирован так, чтобы его
+  можно было легко верфицировать, т.е. чтобы перед исполнением в ядре можно было
+  легко и быстро узнать нет ли в данном коде небезопасных последовательностей
+  инструкций. У BPF есть стандарт, хотя он достаточно условный и он может быть
+  использован для доработки различных систем ядра в числе которых:
+\end{quote}
+
+
+\chapter*{Заключение}
+
+
 
 \renewcommand{\bibname}{\large СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ}
 \begin{thebibliography}{9}
   \vspace*{0.3cm}
-  \bibitem{1}
-  Joseph Y-T. Leung\ Handbook of Scheduling: Algorithms, Models, and Performance Analysis CRC Press 2004
+  \bibitem {1}
+  Отчет о научно-исследовательской работе: Планировщики б. и. Павел Е. Шаго 2024
   \bibitem{2}
+  Joseph Y-T. Leung\ Handbook of Scheduling: Algorithms, Models, and
+  Performance Analysis CRC Press 2004
+  \bibitem{3}
   Andrew S. Tanenbaum, Herbert Bos\ MODERN OPERATING SYSTEMS Pearson
   Education 2023
-  \bibitem{3}
-  Dror G. Feitelson, Larry Rudolph\ Job Scheduling
-  Strategies for Parallel Processing Springer 2001
   \bibitem{4}
+  Torvalds L. Linux Kernel [Электронный ресурс] / L. Torvalds.
+  -- Режим доступа: \url{https://github.com/torvalds/linux} -- Дата обращения
+  15.04.2025.
+  \bibitem{5}
+  sched-ext/scx [Электронный ресурс]. -- Режим доступа: \\
+  \url{https://github.com/sched-ext/scx} -- Дата обращения 27.04.2025.
+  \bibitem{6}
+  lkml [Электронный ресурс]. -- Режим доступа: \url{https://lkml.org}
+  -- Дата обращения 20.04.2025.
+  \bibitem{7}
+  Liz Rice Learning eBPF O’Reilly Media, Inc 2023
+  \bibitem{8}
   William Stallings\ Operating Systems: Internals and
   Design Principles Pearson Education 2020
-  \bibitem{5}
+  \bibitem{9}
   Michael J. Morrison\ Resource Management and Scheduling
   in Multitasking Operating Systems CRC Press 2017
-  \bibitem{6}
-  Arden Durell\ Go Scheduler Internals 2018
-  \bibitem{7}
-  Thomas E. Anderson, Brian N. Bershad, Edward D. Lazowska, 
-  Henry M. Levy\ Scheduler activations: effective kernel
-  support for the user-level management of parallelism ACM 1992
-  \bibitem{8}
-  Xiaomin Zhu, Yabing Zha, Ling Liu, Peng JiaoGeneral\
-  Framework for Task Scheduling and Resource Provisioning
-  in Cloud Computing Systems IEEE 2016
 \end{thebibliography}
 
 \end{document}
