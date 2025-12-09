@@ -68,6 +68,7 @@
     \begin{enumerate}
       \item Реализовать алгоритм EEVDF с использованием sched\_ext
       \item Определить переменные, параметры и ограничения, построить модель
+      \item Создать тестовое окружение и набор тестовых программ
       \item Придумать и реализовать итоговый алгоритм используя sched\_ext
     \end{enumerate}
   \end{block}
@@ -100,8 +101,8 @@
 \end{frame}
 
 {
-  \setbeamertemplate{footline}{}
-  \setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}{}
+\setbeamertemplate{navigation symbols}{}
 
   \begin{frame}
     \begin{figure}[ht]
@@ -132,15 +133,15 @@
 
   \begin{itemize}
     \item Алгоритм построен на концепции сведения параметров задачи
-      в одну функцию -- виртуальное время.
+      в одну функцию -- виртуальное время
     \item Решение о планировании принимается так: выбирается процесс
       у которого есть доступный запрос с самым ранним
-      виртуальным дедлайном.
+      виртуальным дедлайном
     \item Главный результат: гарантия справедливости алгоритма
       EEVDF, задержка строго ограничена размером временного
-      кванта $ q $.
+      кванта $ q $
     \item Показано, что ограничение является оптимальным для алгоритмов
-      пропорционального распределения и улучшает все предыдущие ограничения.
+      пропорционального распределения и улучшает все предыдущие ограничения
   \end{itemize}
 
   \begin{shadowbox}
@@ -179,50 +180,67 @@
   \frametitle{Модель}
   \begin{columns}
     \column{0.5\textwidth}
-    $$f_i(t) = \frac{w_i}{\sum_{j \in A(t)} w_j}$$
 
-    $$S_i(t_0, t_1) = \int_{t_0}^{t_1} f_i(\tau) d\tau$$
+    \begin{equation}
+        f_i(t) = \frac{w_i}{\sum_{j \in A(t)} w_j}
+        \tag{client share}
+    \end{equation}
 
-    $$lag_i(t) = S_i(t_0, t) - s_i(t_0, t)$$
-
+    \begin{equation}
+        lag_i(t) = S_i(t_0, t) - s_i(t_0, t)
+        \tag{ideal minus actual service time}
+    \end{equation}
+    
     \column{0.5\textwidth}
-    $$V(t) = \int_{t_0}^{t} \frac{1}{\sum_{j \in A(\tau)} w_j} d\tau$$
+    \begin{equation}
+        V(t) = \int_{t_0}^{t} \frac{1}{\sum_{j \in A(\tau)} w_j} d\tau
+        \tag{system virtual time}
+    \end{equation}
 
-    $$S_i(t_1, t_2) = w_i (V(t_2) - V(t_1))$$
+    \begin{equation}
+        S_i(t_1, t_2) = w_i (V(t_2) - V(t_1))        
+        \tag{ideal service time}
+    \end{equation}
 
-    $$V(e) = V(t_0) + \frac{s_i(t_0, t)}{w_i}$$
+    \begin{equation}
+        V(e) = V(t_0) + \frac{s_i(t_0, t)}{w_i}
+        \tag{virtual eligible time}
+    \end{equation}
   \end{columns}
 \end{frame}
 
+
 \begin{frame}
+  \frametitle{Модель}
   \begin{columns}
     \column{0.5\textwidth}
-    $$V(d) = V(e) + \frac{r}{w_i}$$
 
-    $$ve^{(1)} = V(t_1)$$
+    \begin{equation}
+        V(d) = V(e) + \frac{r}{w_i}
+        \tag{virtual dedline}
+    \end{equation}
 
-    $$vd^{(k)} = ve^{(k)} + \frac{r^{(k)}}{w_i}$$
+    \begin{equation}
+        V(t^+) = V(t) + \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i} -
+        \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i}
+        \tag{weight change}
+    \end{equation}
 
     \column{0.5\textwidth}
-    $$ve^{(k+1)} = vd^{(k)}$$
 
-    $$ve^{(k+1)} = ve^{(k)} + \frac{u^{(k)}}{w_i}$$
+    \begin{equation}
+        V(t^+) = V(t) + \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i}
+        \tag{join}
+    \end{equation}
 
-    $$V(t^+) = V(t) + \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i}$$
-
-    $$V(t^+) = V(t) - \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i}$$
+    \begin{equation}
+        V(t^+) = V(t) - \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i}
+        \tag{leave}
+    \end{equation}
 
   \end{columns}
 \end{frame}
 
-\begin{frame}
-  $$V(t^+) = V(t) + \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i} -
-  \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i}$$
-
-  $$-r_{max} < lag_k(t) < max(r_{max}, q)$$
-
-  $$-q < lag_k(t) < q$$
-\end{frame}
 
 \begin{frame}
   \frametitle{Наивное сравнение}
