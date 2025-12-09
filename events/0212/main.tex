@@ -11,6 +11,9 @@
 \usepackage{multicol}
 \usepackage{unicode-math}
 \usepackage{changepage}
+\usepackage{caption}
+\captionsetup[figure]{name=Fig.,labelsep=colon}
+\setbeamertemplate{caption}[numbered]
 
 \usepackage{tcolorbox}
 \tcbuselibrary{skins}
@@ -22,14 +25,13 @@
 %\setmathfont{DejaVu Math TeX Gyre}
 \setmathfont{Latin Modern Math}
 
-
 \title{Планировщик процессов для гетерогенных процессорных архитектур}
 \author{Шаго Павел Евгеньевич}
 \institute {
-        Научный руководитель: Корхов Владимир Владиславович \\
-        \vspace{0.5cm}
-        Факультет прикладной математики -- процессов управления\\
-        Кафедра моделирования электромеханических и компьютерных систем
+  Научный руководитель: Корхов Владимир Владиславович \\
+  \vspace{0.5cm}
+  Факультет прикладной математики -- процессов управления\\
+  Кафедра моделирования электромеханических и компьютерных систем
 }
 
 \usetheme{Warsaw}
@@ -50,238 +52,329 @@
 
 \begin{document}
 
-
 \begin{frame}
-        \titlepage
+  \titlepage
 \end{frame}
 
-
 \begin{frame}
-        \frametitle{Цель и задачи}
+  \frametitle{Цель и задачи}
 
-        \begin{block}{Цель}
-                Разработать более эффективный планировщик процессов
-                для гетерогенного процессора (aka Hybrid CPU, big.LITTLE)
-        \end{block}
-        
-        \begin{block}{Задачи}
-                \begin{itemize}
-                        \item Переписать EEVDF на sched\_ext
-                \end{itemize}
-        \end{block}
+  \begin{block}{Цель}
+    Разработать более эффективный планировщик процессов
+    для гетерогенного процессора (Hybrid CPU, big.LITTLE)
+  \end{block}
 
+  \begin{block}{Задачи}
+    \begin{enumerate}
+      \item Реализовать алгоритм EEVDF с использованием sched\_ext
+      \item Определить переменные, параметры и ограничения, построить модель
+      \item Придумать и реализовать итоговый алгоритм используя sched\_ext
+    \end{enumerate}
+  \end{block}
 \end{frame}
 
-
 \begin{frame}
-       Тут будет обоснование почему это не очень хорошо для ARL,
-       как это можно было бы поправить с точки зрения алгоритма
-       \includegraphics[width=0.85\linewidth]{res/ARL.png}
-\end{frame}
+  \frametitle{sched\_ext}
+  \begin{block}{Описание}
+    Инфраструктура в ядре Linux для разработки планировщиков на eBPF
+    и их исполнения в виртуальной машине ядра
+  \end{block}
 
+  \begin{block}{Особенности}
+    \begin{itemize}
+      \item Предоставляет полноценный API для реализации любого
+        алгоритма планирования
+      \item Динамическое подключение и отключение
+      \item Безопасность: откат на EEVDF при ошибках
+    \end{itemize}
+  \end{block}
 
-\begin{frame}
-        \frametitle{Введение}
-
-        \begin{itemize}
-                \item Алгоритм построен на концепции сведения параметров задачи
-                        в одну функцию -- виртуальное время.
-                \item Решение о планировании принимается так: выбирается процесс
-                        у которого есть доступный запрос с самым ранним
-                        виртуальным дедлайном.
-                \item Главный результат: гарантия справедливости алгоритма
-                        EEVDF, задержка строго ограничена размером временного
-                        кванта $ q $.
-                \item Показано, что ограничение является оптимальным для алгоритмов
-                        пропорционального распределения и улучшает все предыдущие ограничения.
-        \end{itemize}
-
-        \begin{shadowbox}
-        Earliest Eligible Virtual Deadline First : A Flexible
-        and Accurate Mechanism for Proportional Share Resource Allocation
-
-        \vspace{0.2cm}
-        Ion Stoica, Hussein Abdel-Wahab
-
-        Old Dominion University 1996
-        \end{shadowbox}
+  \textbf{Цикл планирования:}
+  \begin{enumerate}
+    \item \texttt{select\_cpu()} $\to$ выбор потока процессора
+    \item \texttt{enqueue()} $\to$ вставка в глобальную очередь DSQ
+    \item \texttt{dispatch()} $\to$ перемещение в локальную DSQ
+    \item \texttt{dequeue()} $\to$ извлечение из локальной очереди
+  \end{enumerate}
 
 \end{frame}
 
+{
+  \setbeamertemplate{footline}{}
+  \setbeamertemplate{navigation symbols}{}
 
+  \begin{frame}
+    \begin{figure}[ht]
+      \centering
+      \includegraphics[width=1\linewidth]{res/libbpf.png}
+      \caption{Схема работы eBPF}
+      \label{fig:my_label}
+    \end{figure}
+  \end{frame}
+}
 
+{
+  \setbeamertemplate{footline}{}
+  \setbeamertemplate{navigation symbols}{}
+
+  \begin{frame}
+    \begin{figure}[ht]
+      \centering
+      \includegraphics[width=0.96\linewidth]{res/intel_arl.jpg}
+      \caption{Гетерогенный процессор Intel (целевая платформа)}
+      \label{fig:my_label2}
+    \end{figure}
+  \end{frame}
+}
 
 \begin{frame}
-        \frametitle{Предположения}
+  \frametitle{Введение}
 
-        \begin{itemize}
-                \item Процессы конкурируют за общий разделяющийся по времени
-                        ресурс (CPU).
-                \item Ресурс распределяется во временных квантах не больше чем
-                        $ q $.
-                \item В начале каждого кванта времени для использования ресурса
-                        выбирается процесс.
-                \item После того как процесс захватил ресурс он может
-                        использовать его весь квант времени либо освободить до
-                        окончания кванта времени.
-                \item Каждому процессу назначается вес $ w_i $ определяющий 
-                        относительную долю времени которая ему положена.
-                \item Только процессы могут порождать временные кванты.
-        \end{itemize}
+  \begin{itemize}
+    \item Алгоритм построен на концепции сведения параметров задачи
+      в одну функцию -- виртуальное время.
+    \item Решение о планировании принимается так: выбирается процесс
+      у которого есть доступный запрос с самым ранним
+      виртуальным дедлайном.
+    \item Главный результат: гарантия справедливости алгоритма
+      EEVDF, задержка строго ограничена размером временного
+      кванта $ q $.
+    \item Показано, что ограничение является оптимальным для алгоритмов
+      пропорционального распределения и улучшает все предыдущие ограничения.
+  \end{itemize}
+
+  \begin{shadowbox}
+    Earliest Eligible Virtual Deadline First : A Flexible
+    and Accurate Mechanism for Proportional Share Resource Allocation
+
+    \vspace{0.2cm}
+    Ion Stoica, Hussein Abdel-Wahab
+
+    Old Dominion University 1996
+  \end{shadowbox}
 
 \end{frame}
 
-
 \begin{frame}
-        1. Доля клиента (Client Share, $f_i(t)$)
-        Доля ресурса, которую клиент $i$ должен получить в момент времени $t$, определяется отношением
-        его веса ($w_i$) к сумме весов всех активных клиентов ($A(t)$):
-        $$f_i(t) = \frac{w_i}{\sum_{j \in A(t)} w_j}$$
-\end{frame}
+  \frametitle{Предположения}
 
-
-\begin{frame}
-        Тут будут результаты работы
-\end{frame}
-
-
-\begin{frame}
-        Тут будет короткое напоминание что такое eBPF и shed\_ext
-\end{frame}
-
-
-
-\begin{frame}
-        Сведения о реализации, сравнительный график EEVDF (sched\_ext)
-        vs EEVDF
-\end{frame}
-
-
-\begin{frame}
-        \frametitle{Спасибо за внимание, вопросы?}
-        
-        \large Репозиторий с реализацией
-
-        \begin{adjustwidth}{2cm}{0cm}
-                \begin{thebibliography}{20}
-                        \bibitem{paper}
-                        \href{https://github.com/shgpavel/A1349}
-                        {https://github.com/shgpavel/A1349}
-                \end{thebibliography}
-        \end{adjustwidth}
-
-        \vspace{1.4cm}
-        \large Репозиторий с другими scx планировщиками
-
-        \begin{adjustwidth}{2cm}{0cm}
-                \begin{thebibliography}{20}
-                        \bibitem{paper}
-                        \href{https://github.com/sched-ext/scx}
-                        {https://github.com/sched-ext/scx}
-                \end{thebibliography}
-        \end{adjustwidth}
+  \begin{itemize}
+    \item Процессы конкурируют за общий разделяющийся по времени
+      ресурс (CPU).
+    \item Ресурс распределяется во временных квантах не больше чем
+      $ q $.
+    \item В начале каждого кванта времени для использования ресурса
+      выбирается процесс.
+    \item После того как процесс захватил ресурс он может
+      использовать его весь квант времени либо освободить до
+      окончания кванта времени.
+    \item Каждому процессу назначается вес $ w_i $ определяющий
+      относительную долю времени которая ему положена.
+    \item Только процессы могут порождать временные кванты.
+  \end{itemize}
 
 \end{frame}
 
+\begin{frame}
+  \frametitle{Модель}
+  \begin{columns}
+    \column{0.5\textwidth}
+    $$f_i(t) = \frac{w_i}{\sum_{j \in A(t)} w_j}$$
+
+    $$S_i(t_0, t_1) = \int_{t_0}^{t_1} f_i(\tau) d\tau$$
+
+    $$lag_i(t) = S_i(t_0, t) - s_i(t_0, t)$$
+
+    \column{0.5\textwidth}
+    $$V(t) = \int_{t_0}^{t} \frac{1}{\sum_{j \in A(\tau)} w_j} d\tau$$
+
+    $$S_i(t_1, t_2) = w_i (V(t_2) - V(t_1))$$
+
+    $$V(e) = V(t_0) + \frac{s_i(t_0, t)}{w_i}$$
+  \end{columns}
+\end{frame}
 
 \begin{frame}
-        \frametitle{Дополнительный слайд. Обозначения}
-        $ n $ -- количество процессов
+  \begin{columns}
+    \column{0.5\textwidth}
+    $$V(d) = V(e) + \frac{r}{w_i}$$
 
-        \vspace{0.03cm}
-        $ n_a $ -- количество активных процессов
+    $$ve^{(1)} = V(t_1)$$
 
-        \vspace{0.03cm}
-        $ w_i $ -- вес $ i $-го процесса
+    $$vd^{(k)} = ve^{(k)} + \frac{r^{(k)}}{w_i}$$
 
-        \vspace{0.03cm}
-        $ q $ -- квант времени
+    \column{0.5\textwidth}
+    $$ve^{(k+1)} = vd^{(k)}$$
 
-        \vspace{0.03cm}
-        $ m $ -- количество выделенных временных квантов
+    $$ve^{(k+1)} = ve^{(k)} + \frac{u^{(k)}}{w_i}$$
 
-        \vspace{0.03cm}
-        $ r $ -- запрошенное процессом время на исполнение
+    $$V(t^+) = V(t) + \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i}$$
 
-        \vspace{0.03cm}
-        $ r_{max} $ -- максимально возможное время на исполнение
+    $$V(t^+) = V(t) - \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i}$$
 
-        \vspace{0.03cm}
-        $ r_i^{(k)} $ -- продолжительность исполнения $ k $-го запроса $ i $-го
-        процесса
+  \end{columns}
+\end{frame}
 
-        \vspace{0.03cm}
-        $ u_i^{(k)} $ -- время которое фактически получает процесс $ i $ на
-        k-ом запросе
+\begin{frame}
+  $$V(t^+) = V(t) + \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i} -
+  \frac{lag_j(t)}{\sum_{i \in A(t^+)} w_i}$$
 
-        \vspace{0.03cm}
-        $ t $ -- момент в реальном времени
+  $$-r_{max} < lag_k(t) < max(r_{max}, q)$$
 
-        \vspace{0.03cm}
-        $ t_a $ -- момент реального времени когда процесс $ i $ становится
-        активным
+  $$-q < lag_k(t) < q$$
+\end{frame}
 
-        \vspace{0.01cm}
-        $ t^{-} $ -- время прямо перед наступлением события
+\begin{frame}
+  \frametitle{Наивное сравнение}
+  \begin{columns}
+    \column{0.5\textwidth}
+    \begin{figure}[ht]
+      \centering
+      \includegraphics[width=\linewidth]{res/EEVDF.png}
+      \caption{EEVDF}
+      \label{fig:my_label3}
+    \end{figure}
 
-        \vspace{0.01cm}
-        $ t^{+} $ -- время сразу после наступления события
-        
-        \vspace{0.01cm}
-        $ A(t) $ -- множество всех активных в момент $ t $ процессов
+    \column{0.5\textwidth}
+    \begin{figure}[ht]
+      \centering
+      \includegraphics[width=\linewidth]{res/scx_nest.png}
+      \caption{scx\_nest}
+      \label{fig:my_label4}
+    \end{figure}
+  \end{columns}
 
-        \vspace{0.01cm}
-        $ W(t) $ -- сумма весов всех активных процессов
+  \begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.7\linewidth]{res/EEVDF_sched_ext.png}
+    \caption{EEVDF (sched\_ext)}
+    \label{fig:my_label5}
+  \end{figure}
+\end{frame}
+
+\begin{frame}
+  \frametitle{Спасибо за внимание, вопросы?}
+
+  \large Репозиторий с реализацией
+
+  \begin{adjustwidth}{2cm}{0cm}
+    \begin{thebibliography}{20}
+      \bibitem{paper}
+      \href{https://github.com/shgpavel/A1349}
+      {https://github.com/shgpavel/A1349}
+    \end{thebibliography}
+  \end{adjustwidth}
+\end{frame}
+
+\begin{frame}
+  \frametitle{Дополнительный слайд. Репозиторий scx}
+
+  \large Репозиторий с другими sched\_ext планировщиками
+
+  \begin{adjustwidth}{2cm}{0cm}
+    \begin{thebibliography}{100}
+      \bibitem{paper2}
+      \href{https://github.com/sched-ext/scx}
+      {https://github.com/sched-ext/scx}
+    \end{thebibliography}
+  \end{adjustwidth}
+\end{frame}
+
+\begin{frame}
+  \frametitle{Дополнительный слайд. Обозначения 1}
+  $ n $ -- количество процессов
+
+  \vspace{0.03cm}
+  $ n_a $ -- количество активных процессов
+
+  \vspace{0.03cm}
+  $ w_i $ -- вес $ i $-го процесса
+
+  \vspace{0.03cm}
+  $ q $ -- квант времени
+
+  \vspace{0.03cm}
+  $ m $ -- количество выделенных временных квантов
+
+  \vspace{0.03cm}
+  $ r $ -- запрошенное процессом время на исполнение
+
+  \vspace{0.03cm}
+  $ r_{max} $ -- максимально возможное время на исполнение
+
+  \vspace{0.03cm}
+  $ r_i^{(k)} $ -- продолжительность исполнения $ k $-го запроса $ i $-го
+  процесса
+
+  \vspace{0.03cm}
+  $ u_i^{(k)} $ -- время которое фактически получает процесс $ i $ на
+  k-ом запросе
+
+  \vspace{0.03cm}
+  $ t $ -- момент в реальном времени
+
+  \vspace{0.03cm}
+  $ t_a $ -- момент реального времени когда процесс $ i $ становится
+  активным
+
+  \vspace{0.01cm}
+  $ t^{-} $ -- время прямо перед наступлением события
+
+  \vspace{0.01cm}
+  $ t^{+} $ -- время сразу после наступления события
+
+  \vspace{0.01cm}
+  $ A(t) $ -- множество всех активных в момент $ t $ процессов
+
+  \vspace{0.01cm}
+  $ W(t) $ -- сумма весов всех активных процессов
 
 \end{frame}
 
-
 \begin{frame}
-        \frametitle{Дополнительный слайд. Обозначения}
-        \vspace{0.03cm}
-        $ f_{i}(t) $ -- доля процесса $ i $ во время $ t $
-        
-        \vspace{0.03cm}
-        $ S_{i}(t_0, t_1) $ -- время обслуживания которое должен получить
-        процесс $ i $ в идеальной системе
+  \frametitle{Дополнительный слайд. Обозначения 2}
+  \vspace{0.03cm}
+  $ f_{i}(t) $ -- доля процесса $ i $ во время $ t $
 
-        \vspace{0.03cm}
-        $ s_{i}(t_a, t) $ -- время обслуживания которое клиент $ i $ на
-        самом деле получает
+  \vspace{0.03cm}
+  $ S_{i}(t_0, t_1) $ -- время обслуживания которое должен получить
+  процесс $ i $ в идеальной системе
 
-        \vspace{0.03cm}
-        $ V(t) $ -- виртуальное время системы
+  \vspace{0.03cm}
+  $ s_{i}(t_a, t) $ -- время обслуживания которое клиент $ i $ на
+  самом деле получает
 
-        \vspace{0.03cm}
-        $ e $ -- реальное подходящее время время запроса
-        
-        \vspace{0.03cm}
-        $ d $ -- реальный дедлайн запроса
+  \vspace{0.03cm}
+  $ V(t) $ -- виртуальное время системы
 
-        \vspace{0.03cm}
-        $ B $ -- множество активных процессов дедлайн которых в $ [e, d] $
+  \vspace{0.03cm}
+  $ e $ -- реальное подходящее время время запроса
 
-        \vspace{0.03cm}
-        $ C $ -- множество активных процессов дедлайн которых больше $ d $
+  \vspace{0.03cm}
+  $ d $ -- реальный дедлайн запроса
 
-        \vspace{0.03cm}
-        $ ve_i^{(k)} $ -- виртуальное подходящее время $ k $-го запроса $ i $-го
-        процесса
+  \vspace{0.03cm}
+  $ B $ -- множество активных процессов дедлайн которых в $ [e, d] $
 
-        \vspace{0.03cm}
-        $ vd_i^{(k)} $ -- виртуальный дедлайн $ k $-го запроса $ i $-го
-        процесса
+  \vspace{0.03cm}
+  $ C $ -- множество активных процессов дедлайн которых больше $ d $
 
-        \vspace{0.03cm}
-        $ lag_{i}(t) $ -- задержка обслуживания процесса $ i $ в момент
-        времени $ t,\ (S - s) $ 
+  \vspace{0.03cm}
+  $ ve_i^{(k)} $ -- виртуальное подходящее время $ k $-го запроса $ i $-го
+  процесса
 
-        \vspace{0.03cm}
-        $ d_{neg} $ -- наибольший дедлайн среди всех процессов с отрицательными
-        $ lag $ которые активны в момент времени $ t_1 $
+  \vspace{0.03cm}
+  $ vd_i^{(k)} $ -- виртуальный дедлайн $ k $-го запроса $ i $-го
+  процесса
+
+  \vspace{0.03cm}
+  $ lag_{i}(t) $ -- задержка обслуживания процесса $ i $ в момент
+  времени $ t,\ (S - s) $
+
+  \vspace{0.03cm}
+  $ d_{neg} $ -- наибольший дедлайн среди всех процессов с отрицательными
+  $ lag $ которые активны в момент времени $ t_1 $
 
 \end{frame}
-
-
 
 \end{document}
