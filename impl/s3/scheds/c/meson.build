@@ -1,4 +1,4 @@
-c_scheds = ['scx_simple', 'scx_eevdf']
+c_scheds = ['scx_eevdf']
 
 thread_dep = dependency('threads')
 

@@ -4,7 +4,7 @@
 # Copyright (c) 2025 Pavel Shago
 
 # Scheduler lists for convenience targets
-C_SCHEDS := scx_simple scx_eevdf
+C_SCHEDS := scx_eevdf
 
 # Always require out-of-source builds - default to O=build if not specified
 ifeq ("$(origin O)", "command line")

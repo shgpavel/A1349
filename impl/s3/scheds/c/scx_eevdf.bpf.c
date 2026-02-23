@@ -2,6 +2,8 @@
 
 char _license[] SEC("license") = "GPL";
 
+UEI_DEFINE(uei);
+
 struct eevdf_ctx {
 	u64 vtime_now;
 	u64 total_weight;
@@ -176,6 +178,12 @@ BPF_STRUCT_OPS_SLEEPABLE(eevdf_init)
 	return scx_bpf_create_dsq(SHARED_DSQ, -1);
 }
 
+void
+BPF_STRUCT_OPS(eevdf_exit, struct scx_exit_info *ei)
+{
+	UEI_RECORD(uei, ei);
+}
+
 SCX_OPS_DEFINE(eevdf_ops,
                .select_cpu = (void *)eevdf_select_cpu,
                .enqueue    = (void *)eevdf_enqueue,
@@ -186,4 +194,5 @@ SCX_OPS_DEFINE(eevdf_ops,
                .enable     = (void *)eevdf_enable,
                .disable    = (void *)eevdf_disable,
                .init       = (void *)eevdf_init,
+               .exit       = (void *)eevdf_exit,
                .name       = "eevdf");

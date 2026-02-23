@@ -1,8 +1,11 @@
 /* EEVDF-like sched_ext scheduler based on scx_simple */
 
-#include <scx/common.h>
+#include <stdio.h>
+#include <unistd.h>
 #include <signal.h>
 #include <libgen.h>
+#include <bpf/bpf.h>
+#include <scx/common.h>
 
 #include "scx_eevdf.bpf.skel.h"
 
@@ -35,11 +38,7 @@ main(int argc, char **argv)
 	signal(SIGTERM, sigint_handler);
 
 restart:
-	skel = scx_eevdf__open();
-	if (!skel) {
-		fprintf(stderr, "Failed to open BPF skeleton\n");
-		return 1;
-	}
+	skel = SCX_OPS_OPEN(eevdf_ops, scx_eevdf);
 
 	while ((opt = getopt(argc, argv, "h")) != -1) {
 		switch (opt) {
@@ -49,28 +48,20 @@ restart:
 		}
 	}
 
-	if (scx_eevdf__load(skel)) {
-		fprintf(stderr, "Failed to load BPF skeleton\n");
-		scx_eevdf__destroy(skel);
-		return 1;
-	}
-
-	link = bpf_map__attach_struct_ops(skel->maps.eevdf_ops);
-	if (!link) {
-		fprintf(stderr, "Failed to attach struct ops\n");
-		scx_eevdf__destroy(skel);
-		return 1;
-	}
+	SCX_OPS_LOAD(skel, eevdf_ops, scx_eevdf, uei);
+	link = SCX_OPS_ATTACH(skel, eevdf_ops, scx_eevdf);
 
 	printf("EEVDF scheduler attached. Press Ctrl+C to exit.\n");
 
-	while (!exit_req) {
+	while (!exit_req && !UEI_EXITED(skel, uei)) {
 		sleep(1);
 	}
 
 	bpf_link__destroy(link);
-	ecode = 0;
+	ecode = UEI_REPORT(skel, uei);
 	scx_eevdf__destroy(skel);
 
+	if (UEI_ECODE_RESTART(ecode))
+		goto restart;
 	return 0;
 }
