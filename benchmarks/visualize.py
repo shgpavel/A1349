@@ -31,10 +31,204 @@ SCHED_COLORS = {
 }
 
 SCHED_ORDER = ["default", "s3", "s3+", "s4"]
+LATENCY_PERCENTILES = [("p50", "-"), ("p95", "--"), ("p99", ":")]
+LATENCY_PLOTS = [
+    ("sched_delay", "Schedule Delay", "latency_sched_delay"),
+    ("runqueue", "Runqueue Latency", "latency_runqueue"),
+    ("wakeup", "Wakeup Latency", "latency_wakeup"),
+    ("preemption", "Preemption Latency", "latency_preemption"),
+]
+THROUGHPUT_PLOTS = [
+    (
+        "hackbench_time_sec",
+        "throughput_hackbench",
+        "Hackbench Time",
+        "hackbench time (s)",
+        True,
+    ),
+    (
+        "sysbench_events_per_sec",
+        "throughput_sysbench",
+        "Sysbench Throughput",
+        "sysbench (events/s)",
+        False,
+    ),
+]
+SUMMARY_LINE_PLOTS = [
+    (
+        "summary_sched_delay_p50",
+        "Schedule Delay p50 (ns)",
+        "ns",
+        "sched_delay_p50_ns",
+        None,
+    ),
+    (
+        "summary_sched_delay_p99",
+        "Schedule Delay p99 (ns)",
+        "ns",
+        "sched_delay_p99_ns",
+        None,
+    ),
+    (
+        "summary_cpu_utilization",
+        "CPU Utilization (%)",
+        "CPU %",
+        "cpu_util_pct",
+        (0, 105),
+    ),
+    (
+        "summary_ctx_switches",
+        "Context Switches/sec",
+        "Switches/sec",
+        "ctx_switches_per_sec",
+        None,
+    ),
+    (
+        "summary_power",
+        "Power (Watts)",
+        "Watts",
+        "power_watts",
+        None,
+    ),
+]
 
 
 def color_for(sched):
     return SCHED_COLORS.get(sched, "#7f7f7f")
+
+
+def add_no_data(ax):
+    ax.text(
+        0.5,
+        0.5,
+        "No data",
+        transform=ax.transAxes,
+        ha="center",
+        va="center",
+        fontsize=11,
+        color="gray",
+        style="italic",
+    )
+
+
+def add_legend(ax, **kwargs):
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, **kwargs)
+
+
+def metric_series(frame, column):
+    if column not in frame.columns:
+        return None
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+def metric_has_data(frame, column):
+    vals = metric_series(frame, column)
+    return vals is not None and vals.notna().any()
+
+
+def iter_scheduler_series(data, scheds, column):
+    if column not in data.columns:
+        return
+
+    for sched in scheds:
+        sdf = data[data["scheduler"] == sched]
+        vals = metric_series(sdf, column)
+        if vals is not None and vals.notna().any():
+            yield sched, sdf, vals
+
+
+def scheduler_metric_means(data, scheds, column):
+    for sched, _, vals in iter_scheduler_series(data, scheds, column):
+        yield sched, vals.dropna().mean()
+
+
+def plot_line_metric(
+    data,
+    scheds,
+    output_dir,
+    name,
+    title,
+    ylabel,
+    column,
+    *,
+    ylim=None,
+    legend_fontsize=8,
+):
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.set_title(title)
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel("Elapsed (s)")
+
+    has_data = False
+    for sched, sdf, vals in iter_scheduler_series(data, scheds, column):
+        ax.plot(
+            sdf["elapsed_s"],
+            vals,
+            color=color_for(sched),
+            label=sched,
+            alpha=0.8,
+        )
+        has_data = True
+
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+
+    if has_data:
+        add_legend(ax, fontsize=legend_fontsize)
+    else:
+        add_no_data(ax)
+
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    save(fig, output_dir, name)
+    return has_data
+
+
+def plot_bar_metric(
+    data,
+    scheds,
+    output_dir,
+    name,
+    title,
+    ylabel,
+    column,
+    *,
+    lower_better=False,
+):
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.set_title(title)
+    note = " (lower is better)" if lower_better else " (higher is better)"
+    ax.set_ylabel(ylabel + note)
+
+    values = []
+    labels = []
+    colors = []
+
+    for sched, mean_value in scheduler_metric_means(data, scheds, column):
+        values.append(mean_value)
+        labels.append(sched)
+        colors.append(color_for(sched))
+
+    if values:
+        bars = ax.bar(labels, values, color=colors, alpha=0.8, edgecolor="black")
+        for bar, val in zip(bars, values):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() * 1.02,
+                f"{val:.2f}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
+    else:
+        add_no_data(ax)
+
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    save(fig, output_dir, name)
+    return bool(values)
 
 
 # ---------------------------------------------------------------------------
@@ -73,49 +267,41 @@ def schedulers_in(data):
 
 
 # ---------------------------------------------------------------------------
-# Plot 1: Latency time series (2x2 grid)
+# Plot 1: Latency time series
 # ---------------------------------------------------------------------------
 
 def plot_latency_timeseries(data, scheds, output_dir):
-    lat_types = [
-        ("sched_delay", "Schedule Delay"),
-        ("runqueue", "Runqueue Latency"),
-        ("wakeup", "Wakeup Latency"),
-        ("preemption", "Preemption Latency"),
-    ]
-
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True)
-    fig.suptitle("Latency Over Time (ns)", fontsize=14)
-
-    for ax, (prefix, title) in zip(axes.flat, lat_types):
+    for prefix, title, name in LATENCY_PLOTS:
+        fig, ax = plt.subplots(figsize=(10, 5))
         has_data = False
         for sched in scheds:
             sdf = data[data["scheduler"] == sched]
-            x = sdf["elapsed_s"]
-
-            for pct, ls in [("p50", "-"), ("p95", "--"), ("p99", ":")]:
+            for pct, linestyle in LATENCY_PERCENTILES:
                 col = f"{prefix}_{pct}_ns"
-                if col in sdf.columns:
-                    vals = pd.to_numeric(sdf[col], errors="coerce")
-                    if vals.notna().any():
-                        ax.plot(x, vals, ls, color=color_for(sched),
-                                label=f"{sched} {pct}", alpha=0.8)
-                        has_data = True
+                vals = metric_series(sdf, col)
+                if vals is None or not vals.notna().any():
+                    continue
+                ax.plot(
+                    sdf["elapsed_s"],
+                    vals,
+                    linestyle=linestyle,
+                    color=color_for(sched),
+                    label=f"{sched} {pct}",
+                    alpha=0.8,
+                )
+                has_data = True
 
-        ax.set_title(title)
+        ax.set_title(f"{title} Over Time")
         ax.set_ylabel("ns")
+        ax.set_xlabel("Elapsed (s)")
         if has_data:
-            ax.legend(fontsize=7, ncol=2)
+            add_legend(ax, fontsize=7, ncol=2)
         else:
-            ax.text(0.5, 0.5, "No data",
-                    transform=ax.transAxes, ha="center", va="center",
-                    fontsize=11, color="gray", style="italic")
+            add_no_data(ax)
         ax.grid(True, alpha=0.3)
 
-    axes[1][0].set_xlabel("Elapsed (s)")
-    axes[1][1].set_xlabel("Elapsed (s)")
-    fig.tight_layout()
-    save(fig, output_dir, "latency_timeseries")
+        fig.tight_layout()
+        save(fig, output_dir, name)
 
 
 # ---------------------------------------------------------------------------
@@ -123,23 +309,16 @@ def plot_latency_timeseries(data, scheds, output_dir):
 # ---------------------------------------------------------------------------
 
 def plot_cpu_util(data, scheds, output_dir):
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.set_title("CPU Utilization Over Time")
-    ax.set_ylabel("CPU %")
-    ax.set_xlabel("Elapsed (s)")
-
-    for sched in scheds:
-        sdf = data[data["scheduler"] == sched]
-        if "cpu_util_pct" in sdf.columns:
-            vals = pd.to_numeric(sdf["cpu_util_pct"], errors="coerce")
-            ax.plot(sdf["elapsed_s"], vals, color=color_for(sched),
-                    label=sched, alpha=0.8)
-
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(0, 105)
-    fig.tight_layout()
-    save(fig, output_dir, "cpu_utilization")
+    plot_line_metric(
+        data,
+        scheds,
+        output_dir,
+        "cpu_utilization",
+        "CPU Utilization Over Time",
+        "CPU %",
+        "cpu_util_pct",
+        ylim=(0, 105),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -147,22 +326,15 @@ def plot_cpu_util(data, scheds, output_dir):
 # ---------------------------------------------------------------------------
 
 def plot_ctx_switches(data, scheds, output_dir):
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.set_title("Context Switch Rate Over Time")
-    ax.set_ylabel("Switches/sec")
-    ax.set_xlabel("Elapsed (s)")
-
-    for sched in scheds:
-        sdf = data[data["scheduler"] == sched]
-        if "ctx_switches_per_sec" in sdf.columns:
-            vals = pd.to_numeric(sdf["ctx_switches_per_sec"], errors="coerce")
-            ax.plot(sdf["elapsed_s"], vals, color=color_for(sched),
-                    label=sched, alpha=0.8)
-
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    save(fig, output_dir, "ctx_switches")
+    plot_line_metric(
+        data,
+        scheds,
+        output_dir,
+        "ctx_switches",
+        "Context Switch Rate Over Time",
+        "Switches/sec",
+        "ctx_switches_per_sec",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -171,232 +343,81 @@ def plot_ctx_switches(data, scheds, output_dir):
 
 def plot_power(data, scheds, output_dir):
     col = "power_watts"
-    if col not in data.columns:
+    if not metric_has_data(data, col):
         return
 
-    vals = pd.to_numeric(data[col], errors="coerce")
-    if vals.notna().sum() == 0:
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.set_title("Power Consumption Over Time")
-    ax.set_ylabel("Watts")
-    ax.set_xlabel("Elapsed (s)")
-
-    for sched in scheds:
-        sdf = data[data["scheduler"] == sched]
-        v = pd.to_numeric(sdf[col], errors="coerce")
-        if v.notna().any():
-            ax.plot(sdf["elapsed_s"], v, color=color_for(sched),
-                    label=sched, alpha=0.8)
-
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    save(fig, output_dir, "power")
+    plot_line_metric(
+        data,
+        scheds,
+        output_dir,
+        "power",
+        "Power Consumption Over Time",
+        "Watts",
+        col,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Plot 5: Fairness comparison (bar chart)
-# ---------------------------------------------------------------------------
-
-def plot_fairness(data, scheds, output_dir):
-    col = "jain_fairness_index"
-    if col not in data.columns:
-        return
-    if not pd.to_numeric(data[col], errors="coerce").notna().any():
-        return
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.set_title("Jain's Fairness Index by Scheduler")
-    ax.set_ylabel("Fairness Index (1.0 = perfect)")
-
-    values = []
-    labels = []
-    colors = []
-    for sched in scheds:
-        sdf = data[data["scheduler"] == sched]
-        v = pd.to_numeric(sdf[col], errors="coerce").dropna()
-        if len(v) > 0:
-            values.append(v.mean())
-            labels.append(sched)
-            colors.append(color_for(sched))
-
-    if not values:
-        plt.close(fig)
-        return
-
-    bars = ax.bar(labels, values, color=colors, alpha=0.8, edgecolor="black")
-    ax.set_ylim(0, 1.05)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-
-    for bar, val in zip(bars, values):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                f"{val:.4f}", ha="center", va="bottom", fontsize=9)
-
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    save(fig, output_dir, "fairness")
-
-
-# ---------------------------------------------------------------------------
-# Plot 6: Throughput comparison (grouped bars)
+# Plot 5: Throughput comparison
 # ---------------------------------------------------------------------------
 
 def plot_throughput(data, scheds, output_dir):
-    candidates = []
-    if "hackbench_time_sec" in data.columns:
-        candidates.append(("hackbench_time_sec", "hackbench time (s)", True))
-    if "sysbench_events_per_sec" in data.columns:
-        candidates.append(("sysbench_events_per_sec", "sysbench (events/s)", False))
-
-    # Only include metrics that actually have data
-    metrics = [
-        m for m in candidates
-        if pd.to_numeric(data[m[0]], errors="coerce").notna().any()
-    ]
-
-    if not metrics:
-        return
-
-    fig, axes = plt.subplots(1, len(metrics), figsize=(6 * len(metrics), 5))
-    if len(metrics) == 1:
-        axes = [axes]
-    fig.suptitle("Throughput Comparison", fontsize=14)
-
-    for ax, (col, ylabel, lower_better) in zip(axes, metrics):
-        values = []
-        labels = []
-        colors = []
-        for sched in scheds:
-            sdf = data[data["scheduler"] == sched]
-            v = pd.to_numeric(sdf[col], errors="coerce").dropna()
-            if len(v) > 0:
-                values.append(v.mean())
-                labels.append(sched)
-                colors.append(color_for(sched))
-
-        if values:
-            bars = ax.bar(labels, values, color=colors, alpha=0.8,
-                          edgecolor="black")
-            for bar, val in zip(bars, values):
-                ax.text(bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() * 1.02,
-                        f"{val:.2f}", ha="center", va="bottom", fontsize=9)
-
-        note = " (lower is better)" if lower_better else " (higher is better)"
-        ax.set_ylabel(ylabel + note)
-        ax.grid(True, alpha=0.3, axis="y")
-
-    fig.tight_layout()
-    save(fig, output_dir, "throughput")
+    for col, name, title, ylabel, lower_better in THROUGHPUT_PLOTS:
+        if not metric_has_data(data, col):
+            continue
+        plot_bar_metric(
+            data,
+            scheds,
+            output_dir,
+            name,
+            title,
+            ylabel,
+            col,
+            lower_better=lower_better,
+        )
 
 
 # ---------------------------------------------------------------------------
-# Plot 7: Summary dashboard (3x2 grid)
+# Plot 6: Summary outputs
 # ---------------------------------------------------------------------------
 
 def plot_summary(data, scheds, output_dir):
-    fig, axes = plt.subplots(3, 2, figsize=(14, 14))
-    fig.suptitle("Benchmark Summary Dashboard", fontsize=16, y=0.98)
+    for name, title, ylabel, column, ylim in SUMMARY_LINE_PLOTS:
+        if not metric_has_data(data, column):
+            continue
+        plot_line_metric(
+            data,
+            scheds,
+            output_dir,
+            name,
+            title,
+            ylabel,
+            column,
+            ylim=ylim,
+        )
 
-    # (0,0) - Schedule delay p50
-    ax = axes[0][0]
-    ax.set_title("Schedule Delay p50 (ns)")
-    for sched in scheds:
-        sdf = data[data["scheduler"] == sched]
-        col = "sched_delay_p50_ns"
-        if col in sdf.columns:
-            v = pd.to_numeric(sdf[col], errors="coerce")
-            if v.notna().any():
-                ax.plot(sdf["elapsed_s"], v, color=color_for(sched),
-                        label=sched)
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
+    summary_throughput = next(
+        (
+            (column, ylabel, lower_better)
+            for column, _, _, ylabel, lower_better in reversed(THROUGHPUT_PLOTS)
+            if metric_has_data(data, column)
+        ),
+        None,
+    )
+    if summary_throughput is None:
+        return
 
-    # (0,1) - Schedule delay p99
-    ax = axes[0][1]
-    ax.set_title("Schedule Delay p99 (ns)")
-    for sched in scheds:
-        sdf = data[data["scheduler"] == sched]
-        col = "sched_delay_p99_ns"
-        if col in sdf.columns:
-            v = pd.to_numeric(sdf[col], errors="coerce")
-            if v.notna().any():
-                ax.plot(sdf["elapsed_s"], v, color=color_for(sched),
-                        label=sched)
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    # (1,0) - CPU utilization
-    ax = axes[1][0]
-    ax.set_title("CPU Utilization (%)")
-    for sched in scheds:
-        sdf = data[data["scheduler"] == sched]
-        if "cpu_util_pct" in sdf.columns:
-            v = pd.to_numeric(sdf["cpu_util_pct"], errors="coerce")
-            ax.plot(sdf["elapsed_s"], v, color=color_for(sched), label=sched)
-    ax.set_ylim(0, 105)
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    # (1,1) - Context switches
-    ax = axes[1][1]
-    ax.set_title("Context Switches/sec")
-    for sched in scheds:
-        sdf = data[data["scheduler"] == sched]
-        if "ctx_switches_per_sec" in sdf.columns:
-            v = pd.to_numeric(sdf["ctx_switches_per_sec"], errors="coerce")
-            ax.plot(sdf["elapsed_s"], v, color=color_for(sched), label=sched)
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    # (2,0) - Fairness
-    ax = axes[2][0]
-    ax.set_title("Jain's Fairness Index")
-    col = "jain_fairness_index"
-    if col in data.columns:
-        values, labels, colors = [], [], []
-        for sched in scheds:
-            v = pd.to_numeric(
-                data[data["scheduler"] == sched][col], errors="coerce"
-            ).dropna()
-            if len(v) > 0:
-                values.append(v.mean())
-                labels.append(sched)
-                colors.append(color_for(sched))
-        if values:
-            ax.bar(labels, values, color=colors, alpha=0.8, edgecolor="black")
-            ax.set_ylim(0, 1.05)
-            ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.grid(True, alpha=0.3, axis="y")
-
-    # (2,1) - Throughput
-    ax = axes[2][1]
-    ax.set_title("Throughput")
-    tp_col = None
-    if "sysbench_events_per_sec" in data.columns:
-        tp_col = "sysbench_events_per_sec"
-        ax.set_ylabel("events/sec")
-    elif "hackbench_time_sec" in data.columns:
-        tp_col = "hackbench_time_sec"
-        ax.set_ylabel("seconds (lower=better)")
-    if tp_col:
-        values, labels, colors = [], [], []
-        for sched in scheds:
-            v = pd.to_numeric(
-                data[data["scheduler"] == sched][tp_col], errors="coerce"
-            ).dropna()
-            if len(v) > 0:
-                values.append(v.mean())
-                labels.append(sched)
-                colors.append(color_for(sched))
-        if values:
-            ax.bar(labels, values, color=colors, alpha=0.8, edgecolor="black")
-    ax.grid(True, alpha=0.3, axis="y")
-
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    save(fig, output_dir, "summary_dashboard")
+    column, ylabel, lower_better = summary_throughput
+    plot_bar_metric(
+        data,
+        scheds,
+        output_dir,
+        "summary_throughput",
+        "Throughput",
+        ylabel,
+        column,
+        lower_better=lower_better,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -404,11 +425,10 @@ def plot_summary(data, scheds, output_dir):
 # ---------------------------------------------------------------------------
 
 def save(fig, output_dir, name):
-    for ext in ["png", "pdf"]:
-        path = output_dir / f"{name}.{ext}"
-        fig.savefig(path, dpi=150, bbox_inches="tight")
+    path = output_dir / f"{name}.pdf"
+    fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
-    print(f"  Saved {name}.png/pdf")
+    print(f"  Saved {name}.pdf")
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +462,6 @@ def main():
     plot_cpu_util(data, scheds, output_dir)
     plot_ctx_switches(data, scheds, output_dir)
     plot_power(data, scheds, output_dir)
-    plot_fairness(data, scheds, output_dir)
     plot_throughput(data, scheds, output_dir)
     plot_summary(data, scheds, output_dir)
 

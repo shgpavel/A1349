@@ -30,7 +30,6 @@ char _license[] SEC("license") = "GPL";
 
 #define MAX_CPUS      512
 #define HIST_BUCKETS  32   /* log2 buckets: 0=<1ns .. 31=~2s */
-#define MAX_FAIRNESS_PIDS 4096
 
 enum latency_type {
 	LAT_SCHED_DELAY  = 0,  /* wakeup → running */
@@ -71,20 +70,11 @@ struct {
 	__uint(max_entries, 1);
 } csw_counters SEC(".maps");
 
-/* Per-PID cumulative runtime (for fairness mode). */
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(key_size, sizeof(u32));  /* pid */
-	__uint(value_size, sizeof(u64)); /* cumulative runtime ns */
-	__uint(max_entries, MAX_FAIRNESS_PIDS);
-} pid_runtime SEC(".maps");
-
 /* Per-task timestamps for each latency event. */
 struct task_ts {
 	u64 wakeup_ts;    /* last sched_wakeup timestamp */
 	u64 enqueue_ts;   /* last enqueue timestamp */
 	u64 preempt_ts;   /* last preempted (stopping while runnable) timestamp */
-	u64 switch_in_ts; /* timestamp when task was switched in (for runtime) */
 };
 
 struct {
@@ -96,9 +86,6 @@ struct {
 
 /* Filter: 0 = all tasks, nonzero = only this tgid */
 const volatile __u32 tgid_filter = 0;
-
-/* Fairness mode: when nonzero, track per-PID runtime in pid_runtime map */
-const volatile __u32 fairness_mode = 0;
 
 static __always_inline bool
 filter_task(struct task_struct *p)
@@ -231,22 +218,6 @@ int BPF_PROG(handle_sched_switch,
 				ts->preempt_ts = now;
 		}
 
-		/* Track runtime for fairness mode */
-		if (fairness_mode) {
-			ts = get_ts(prev);
-			if (ts && ts->switch_in_ts) {
-				u64 runtime = now - ts->switch_in_ts;
-				u32 pid = BPF_CORE_READ(prev, pid);
-				u64 *cum = bpf_map_lookup_elem(&pid_runtime, &pid);
-				if (cum) {
-					*cum += runtime;
-				} else {
-					bpf_map_update_elem(&pid_runtime, &pid,
-							    &runtime, BPF_ANY);
-				}
-				ts->switch_in_ts = 0;
-			}
-		}
 	}
 
 	/* Incoming: measure latencies */
@@ -256,9 +227,6 @@ int BPF_PROG(handle_sched_switch,
 	ts = get_ts(next);
 	if (!ts)
 		return 0;
-
-	/* Record switch-in timestamp for runtime tracking */
-	ts->switch_in_ts = now;
 
 	/* Schedule delay: wakeup → now */
 	if (ts->wakeup_ts) {
@@ -313,7 +281,6 @@ handle_enqueue(struct task_struct *p)
 /*
  * CFS/EEVDF enqueue hook.
  * Fires when the default fair scheduler enqueues a task.
- * ? prefix = optional: silently skipped if unavailable.
  */
 SEC("?fentry/enqueue_task_fair")
 int BPF_PROG(handle_cfs_enqueue, struct rq *rq, struct task_struct *p,

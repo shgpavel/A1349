@@ -60,8 +60,6 @@ CSV_COLUMNS = [
     # Throughput
     "hackbench_time_sec",
     "sysbench_events_per_sec",
-    # Fairness
-    "jain_fairness_index",
 ]
 
 
@@ -250,12 +248,10 @@ class SchedLatencySource:
     def name(self):
         return "BPF sched_latency"
 
-    def start(self, interval, fairness_file=None):
+    def start(self, interval):
         if not self.available():
             return
         cmd = [self.bin, "-c", "-i", str(interval)]
-        if fairness_file:
-            cmd += ["-f", fairness_file]
         try:
             self.proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -391,62 +387,6 @@ class SysbenchSource:
 
 
 # ---------------------------------------------------------------------------
-# Metric source: fairness harness
-# ---------------------------------------------------------------------------
-
-class FairnessSource:
-    """Runs fairness_harness and computes Jain's fairness index."""
-
-    def __init__(self, harness_bin):
-        self.bin = harness_bin
-
-    def available(self):
-        return os.path.isfile(self.bin) and os.access(self.bin, os.X_OK)
-
-    def name(self):
-        return "fairness_harness"
-
-    def run_once(self, nprocs=None, duration=5):
-        if nprocs is None:
-            nprocs = min(os.cpu_count() or 4, 16)
-        try:
-            r = subprocess.run(
-                [self.bin, "-n", str(nprocs), "-t", str(duration)],
-                capture_output=True, text=True, timeout=duration + 30
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return {}
-
-        runtimes = []
-        for line in r.stdout.splitlines():
-            if line.startswith("pid"):
-                continue
-            parts = line.split(",")
-            if len(parts) >= 2:
-                try:
-                    runtimes.append(int(parts[1]))
-                except ValueError:
-                    pass
-
-        if len(runtimes) < 2:
-            return {}
-
-        return {"jain_fairness_index": round(jain_index(runtimes), 6)}
-
-
-def jain_index(values):
-    """Compute Jain's fairness index: (sum(x))^2 / (n * sum(x^2))."""
-    n = len(values)
-    if n == 0:
-        return 0.0
-    s = sum(values)
-    s2 = sum(x * x for x in values)
-    if s2 == 0:
-        return 1.0
-    return (s * s) / (n * s2)
-
-
-# ---------------------------------------------------------------------------
 # Probe mode
 # ---------------------------------------------------------------------------
 
@@ -460,7 +400,6 @@ def run_probe(args):
         sched_lat,
         HackbenchSource(),
         SysbenchSource(),
-        FairnessSource(args.fairness_bin),
     ]
 
     print("Metric source availability:")
@@ -511,7 +450,6 @@ def collect(args):
     sched_lat = SchedLatencySource(args.sched_latency_bin)
     hackbench = HackbenchSource()
     sysbench = SysbenchSource()
-    fairness = FairnessSource(args.fairness_bin)
 
     # Manage sched_ext scheduler subprocess
     sched_proc = None
@@ -527,11 +465,8 @@ def collect(args):
             print(f"Failed to start scheduler: {e}", file=sys.stderr)
             return 1
 
-    # Fairness file for BPF per-PID data
-    fairness_csv = str(output_dir / f"{scheduler}_{ts_str}_fairness.csv")
-
     # Start BPF latency tool
-    sched_lat.start(interval, fairness_file=fairness_csv if fairness.available() else None)
+    sched_lat.start(interval)
 
     # Priming read (for delta-based sources)
     proc_stat.read(interval)
@@ -553,7 +488,6 @@ def collect(args):
             "sched_latency": sched_lat.available(),
             "hackbench": hackbench.available(),
             "sysbench": sysbench.available(),
-            "fairness_harness": fairness.available(),
         },
     }
     with open(meta_path, "w") as f:
@@ -586,9 +520,6 @@ def collect(args):
     if sysbench.available():
         print("  Running sysbench...", flush=True)
         oneshot_results.update(sysbench.run_once(duration=min(10, duration)))
-    if fairness.available():
-        print("  Running fairness harness...", flush=True)
-        oneshot_results.update(fairness.run_once())
 
     try:
         while not exit_req[0]:
@@ -675,12 +606,6 @@ def main():
         default=str(script_dir / "build" / "sched_latency"),
         help="Path to sched_latency binary"
     )
-    parser.add_argument(
-        "--fairness-bin",
-        default=str(script_dir / "workloads" / "build" / "fairness_harness"),
-        help="Path to fairness_harness binary"
-    )
-
     args = parser.parse_args()
 
     if args.probe:

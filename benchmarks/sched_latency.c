@@ -8,10 +8,9 @@
  *   - Wakeup latency    (wakeup → enqueue)
  *   - Preemption latency (preempted → re-running)
  *
- * Also tracks context switch counters (total, voluntary, involuntary)
- * and optionally per-PID runtime for fairness analysis (-f flag).
+ * Also tracks context switch counters (total, voluntary, involuntary).
  *
- * Usage: sched_latency [-d duration] [-i interval] [-p tgid] [-c] [-f]
+ * Usage: sched_latency [-d duration] [-i interval] [-p tgid] [-c]
  */
 
 #include <stdio.h>
@@ -20,7 +19,6 @@
 #include <unistd.h>
 #include <signal.h>
 #include <time.h>
-#include <errno.h>
 #include <libgen.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -29,7 +27,6 @@
 
 #define HIST_BUCKETS  32
 #define NR_LAT_TYPES  4
-#define MAX_FAIRNESS_PIDS 4096
 
 static const char *lat_names[NR_LAT_TYPES] = {
 	"sched_delay",
@@ -56,21 +53,18 @@ static volatile int exit_req;
 static int  interval_s    = 1;
 static int  duration_s    = 0;
 static int  csv_mode      = 0;
-static int  fairness_mode = 0;
-static char fairness_csv[256] = "";
 
 static const char help_fmt[] =
 "sched_ext latency measurement tool.\n"
 "\n"
 "Measures scheduling latency via BPF tracepoints and reports percentiles.\n"
 "\n"
-"Usage: %s [-d duration] [-i interval] [-p tgid] [-c] [-f [file]] [-h]\n"
+"Usage: %s [-d duration] [-i interval] [-p tgid] [-c] [-h]\n"
 "\n"
 "  -d SEC        Run for SEC seconds then exit (0 = unlimited)\n"
 "  -i SEC        Report interval in seconds (default: 1)\n"
 "  -p TGID       Filter to a specific process group\n"
 "  -c            CSV output mode\n"
-"  -f FILE       Enable fairness tracking; dump per-PID runtime CSV to FILE on exit\n"
 "  -h            Display this help and exit\n";
 
 static void
@@ -324,45 +318,6 @@ print_final_report(int hist_fd, int csw_fd, int nr_cpus)
 	printf("\n");
 }
 
-/*
- * Dump per-PID runtime data to a CSV file (fairness mode).
- */
-static void
-dump_fairness_csv(int runtime_fd)
-{
-	FILE *fp;
-	__u32 pid, next_pid;
-	__u64 runtime_ns;
-
-	if (!fairness_csv[0])
-		return;
-
-	fp = fopen(fairness_csv, "w");
-	if (!fp) {
-		fprintf(stderr, "Failed to open %s: %s\n",
-			fairness_csv, strerror(errno));
-		return;
-	}
-
-	fprintf(fp, "pid,runtime_ns\n");
-
-	/* Iterate all keys in the pid_runtime hash map */
-	if (bpf_map_get_next_key(runtime_fd, NULL, &pid) != 0) {
-		fclose(fp);
-		return;
-	}
-
-	do {
-		if (bpf_map_lookup_elem(runtime_fd, &pid, &runtime_ns) == 0)
-			fprintf(fp, "%u,%llu\n", pid,
-				(unsigned long long)runtime_ns);
-	} while (bpf_map_get_next_key(runtime_fd, &pid, &next_pid) == 0
-		 && (pid = next_pid, 1));
-
-	fclose(fp);
-	printf("Fairness data written to %s\n", fairness_csv);
-}
-
 int
 main(int argc, char **argv)
 {
@@ -370,7 +325,7 @@ main(int argc, char **argv)
 	__u32 tgid = 0;
 	int   opt;
 
-	while ((opt = getopt(argc, argv, "d:i:p:cf:h")) != -1) {
+	while ((opt = getopt(argc, argv, "d:i:p:ch")) != -1) {
 		switch (opt) {
 		case 'd':
 			duration_s = atoi(optarg);
@@ -383,11 +338,6 @@ main(int argc, char **argv)
 			break;
 		case 'c':
 			csv_mode = 1;
-			break;
-		case 'f':
-			fairness_mode = 1;
-			snprintf(fairness_csv, sizeof(fairness_csv),
-				 "%s", optarg);
 			break;
 		default:
 			fprintf(stderr, help_fmt, basename(argv[0]));
@@ -405,7 +355,6 @@ main(int argc, char **argv)
 	}
 
 	skel->rodata->tgid_filter = tgid;
-	skel->rodata->fairness_mode = fairness_mode ? 1 : 0;
 
 	if (sched_latency__load(skel)) {
 		fprintf(stderr, "Failed to load BPF program\n");
@@ -428,15 +377,11 @@ main(int argc, char **argv)
 
 	int hist_fd = bpf_map__fd(skel->maps.hists);
 	int csw_fd  = bpf_map__fd(skel->maps.csw_counters);
-	int rt_fd   = bpf_map__fd(skel->maps.pid_runtime);
 
 	if (tgid)
 		printf("Tracing scheduler latencies for tgid %u...\n", tgid);
 	else
 		printf("Tracing scheduler latencies (all tasks)...\n");
-
-	if (fairness_mode)
-		printf("Fairness tracking enabled → %s\n", fairness_csv);
 
 	print_header();
 
@@ -453,9 +398,6 @@ main(int argc, char **argv)
 	}
 
 	print_final_report(hist_fd, csw_fd, nr_cpus);
-
-	if (fairness_mode)
-		dump_fairness_csv(rt_fd);
 
 	sched_latency__destroy(skel);
 	return 0;

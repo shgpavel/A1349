@@ -1,2 +1,2 @@
 ### A1349 
-Schedulers related research papers and implementations
+schedulers related research papers and implementations
