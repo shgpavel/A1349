@@ -24,7 +24,7 @@ $(filter-out _all sub-make,$(MAKECMDGOALS)) _all: sub-make
 	@:
 
 sub-make:
-	@mkdir -p $(KBUILD_OUTPUT)
+	+@mkdir -p $(KBUILD_OUTPUT)
 	@$(MAKE) --no-print-directory -C $(KBUILD_OUTPUT) -f $(CURDIR)/Makefile \
 		ROOT_SRC_DIR=$(CURDIR) \
 		LIB_OBJ_DIR=$(KBUILD_OUTPUT)/lib SCHED_OBJ_DIR=$(KBUILD_OUTPUT)/scheds/c \
@@ -42,7 +42,8 @@ ifeq ($(skip-makefile),)
 export BPF_CLANG ?= clang
 export BPFTOOL ?= bpftool
 
-ARCH := TARGET_ARCH := x86
+TARGET_ARCH ?= x86
+ARCH ?= $(TARGET_ARCH)
 ENDIAN ?= $(shell printf '\1\0' | od -An -t x2 | awk '{print ($$1=="0001"?"little":"big")}')
 
 LIBBPF_CFLAGS := $(shell pkg-config --cflags libbpf)

@@ -173,6 +173,31 @@ print_header(void)
 	}
 }
 
+/*
+ * Zero a single histogram entry across all CPUs.
+ */
+static void
+zero_hist(int map_fd, __u32 type, int nr_cpus)
+{
+	struct hist per_cpu[nr_cpus];
+
+	memset(per_cpu, 0, sizeof(per_cpu));
+	bpf_map_update_elem(map_fd, &type, per_cpu, BPF_ANY);
+}
+
+/*
+ * Zero context switch counters across all CPUs.
+ */
+static void
+zero_csw(int map_fd, int nr_cpus)
+{
+	struct csw_counters per_cpu[nr_cpus];
+	__u32 key = 0;
+
+	memset(per_cpu, 0, sizeof(per_cpu));
+	bpf_map_update_elem(map_fd, &key, per_cpu, BPF_ANY);
+}
+
 static void
 print_report(int hist_fd, int csw_fd, int nr_cpus)
 {
@@ -244,7 +269,14 @@ print_report(int hist_fd, int csw_fd, int nr_cpus)
 			       fmt_ns(h.min_ns, b5, sizeof(b5)),
 			       fmt_ns(h.max_ns, ts, sizeof(ts)));
 		}
+
+		/* Reset this histogram so next interval starts fresh */
+		zero_hist(hist_fd, t, nr_cpus);
 	}
+
+	/* Reset context switch counters for next interval */
+	if (csw_ok)
+		zero_csw(csw_fd, nr_cpus);
 
 	fflush(stdout);
 }

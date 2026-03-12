@@ -20,6 +20,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -57,9 +58,6 @@ CSV_COLUMNS = [
     "total_csw_per_sec",
     "voluntary_csw_per_sec",
     "involuntary_csw_per_sec",
-    # Throughput
-    "hackbench_time_sec",
-    "sysbench_events_per_sec",
 ]
 
 
@@ -184,6 +182,7 @@ class RaplSource:
 
     def __init__(self):
         self.paths = []
+        self.max_energy_range = 0
         self.prev = None
         self.prev_time = None
         self._discover()
@@ -197,6 +196,12 @@ class RaplSource:
                 ej = d / "energy_uj"
                 if ej.exists():
                     self.paths.append(ej)
+                    # Read platform-specific max range for wrap correction
+                    mr = d / "max_energy_range_uj"
+                    try:
+                        self.max_energy_range += int(mr.read_text().strip())
+                    except (OSError, ValueError):
+                        self.max_energy_range += (1 << 32)
 
     def available(self):
         return len(self.paths) > 0
@@ -220,8 +225,7 @@ class RaplSource:
             if dt > 0:
                 d_uj = total_uj - self.prev
                 if d_uj < 0:
-                    # counter wrapped
-                    d_uj += (1 << 32)
+                    d_uj += self.max_energy_range
                 watts = d_uj / (dt * 1e6)
                 result["power_watts"] = round(watts, 2)
 
@@ -241,6 +245,8 @@ class SchedLatencySource:
         self.bin = sched_latency_bin
         self.proc = None
         self.latest = {}
+        self._lock = threading.Lock()
+        self._reader_thread = None
 
     def available(self):
         return os.path.isfile(self.bin) and os.access(self.bin, os.X_OK)
@@ -262,6 +268,25 @@ class SchedLatencySource:
                 self.proc.stdout.readline()
         except OSError:
             self.proc = None
+            return
+
+        # Start background reader thread for reliable line consumption
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, daemon=True
+        )
+        self._reader_thread.start()
+
+    def _reader_loop(self):
+        """Continuously read lines from subprocess stdout."""
+        while self.proc and self.proc.stdout:
+            line = self.proc.stdout.readline()
+            if not line:
+                break
+            parsed = {}
+            self._parse_line(line.strip(), parsed)
+            if parsed:
+                with self._lock:
+                    self.latest = parsed
 
     def stop(self):
         if self.proc:
@@ -271,26 +296,9 @@ class SchedLatencySource:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
             self.proc = None
-
-    def poll(self):
-        """Read all available lines and parse the latest batch."""
-        if not self.proc or not self.proc.stdout:
-            return {}
-
-        result = {}
-        # Read available lines (non-blocking via readline with poll)
-        import select
-        while True:
-            rlist, _, _ = select.select([self.proc.stdout], [], [], 0.0)
-            if not rlist:
-                break
-            line = self.proc.stdout.readline()
-            if not line:
-                break
-            self._parse_line(line.strip(), result)
-
-        self.latest = result
-        return result
+        if self._reader_thread:
+            self._reader_thread.join(timeout=2)
+            self._reader_thread = None
 
     def _parse_line(self, line, result):
         """Parse one CSV line from sched_latency -c output."""
@@ -316,7 +324,7 @@ class SchedLatencySource:
         result[f"{prefix}_p95_ns"] = p95
         result[f"{prefix}_p99_ns"] = p99
 
-        # Context switch counters (from any latency type row — they're the same)
+        # Context switch counters — now per-interval since BPF resets after read
         if len(parts) >= 12:
             try:
                 result["total_csw_per_sec"] = int(parts[9]) if parts[9] else ""
@@ -326,7 +334,8 @@ class SchedLatencySource:
                 pass
 
     def read(self, interval):
-        return self.poll()
+        with self._lock:
+            return dict(self.latest)
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +436,17 @@ def run_probe(args):
         print(f"  {'enqueue hooks':30s} UNKNOWN (no debugfs)")
 
 
+def require_root():
+    """Benchmark collection needs root for BPF tracing and sched_ext attach."""
+    if os.geteuid() == 0:
+        return True
+    print(
+        "Benchmark collection must run as root. Re-run with sudo or use `make benchmarks`.",
+        file=sys.stderr,
+    )
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Main collection loop
 # ---------------------------------------------------------------------------
@@ -436,6 +456,7 @@ def collect(args):
     scheduler = args.scheduler
     duration = args.duration
     interval = args.interval
+    warmup = args.warmup
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -473,12 +494,34 @@ def collect(args):
     schedstat.read(interval)
     rapl.read(interval)
 
+    # Warmup: collect and discard samples to reach steady state
+    if warmup > 0:
+        print(f"Warming up for {warmup}s...", flush=True)
+        warmup_start = time.monotonic()
+        while time.monotonic() - warmup_start < warmup:
+            time.sleep(interval)
+            proc_stat.read(interval)
+            schedstat.read(interval)
+            rapl.read(interval)
+            sched_lat.read(interval)
+        print("  Warmup complete.", flush=True)
+
+    # Run one-shot benchmarks
+    oneshot = {}
+    if hackbench.available():
+        print("  Running hackbench...", flush=True)
+        oneshot.update(hackbench.run_once())
+    if sysbench.available():
+        print("  Running sysbench...", flush=True)
+        oneshot.update(sysbench.run_once(duration=min(10, duration)))
+
     # Write metadata
     meta = {
         "scheduler": scheduler,
         "start_time": datetime.now().isoformat(),
         "duration": duration,
         "interval": interval,
+        "warmup": warmup,
         "hostname": os.uname().nodename,
         "cpu_count": os.cpu_count(),
         "sources": {
@@ -489,6 +532,7 @@ def collect(args):
             "hackbench": hackbench.available(),
             "sysbench": sysbench.available(),
         },
+        "oneshot": oneshot,
     }
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
@@ -512,15 +556,6 @@ def collect(args):
     start_time = time.monotonic()
     elapsed = 0
 
-    # Run one-shot benchmarks at the start
-    oneshot_results = {}
-    if hackbench.available():
-        print("  Running hackbench...", flush=True)
-        oneshot_results.update(hackbench.run_once())
-    if sysbench.available():
-        print("  Running sysbench...", flush=True)
-        oneshot_results.update(sysbench.run_once(duration=min(10, duration)))
-
     try:
         while not exit_req[0]:
             time.sleep(interval)
@@ -537,9 +572,6 @@ def collect(args):
             row.update(schedstat.read(interval))
             row.update(rapl.read(interval))
             row.update(sched_lat.read(interval))
-
-            # Include one-shot results in every row for easier plotting
-            row.update(oneshot_results)
 
             writer.writerow(row)
             csvfile.flush()
@@ -598,6 +630,10 @@ def main():
         help="Sampling interval in seconds (default: 1)"
     )
     parser.add_argument(
+        "--warmup", type=int, default=5,
+        help="Warmup period in seconds before recording (default: 5)"
+    )
+    parser.add_argument(
         "--output", default="results",
         help="Output directory (default: results/)"
     )
@@ -611,6 +647,9 @@ def main():
     if args.probe:
         run_probe(args)
         return 0
+
+    if not require_root():
+        return 1
 
     return collect(args)
 

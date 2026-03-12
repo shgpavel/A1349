@@ -11,6 +11,7 @@ OBJ_DIR  ?= $(CURDIR)/build
 BPF_CLANG  ?= clang
 BPFTOOL    ?= bpftool
 CC         ?= gcc
+PYTHON     ?= python3
 
 TARGET_ARCH := x86
 ENDIAN      ?= $(shell printf '\1\0' | od -An -t x2 | awk '{print ($$1=="0001"?"little":"big")}')
@@ -41,7 +42,7 @@ TOOLS := sched_latency
 
 ALL := $(addprefix $(OBJ_DIR)/,$(TOOLS))
 
-all: $(ALL)
+all: $(ALL) python-bytecode
 
 $(OBJ_DIR):
 	@mkdir -p $@
@@ -58,7 +59,12 @@ $(OBJ_DIR)/%: $(SRC_DIR)/%.c $(OBJ_DIR)/%.bpf.skel.h
 	@echo "  CC      $@"
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
 
+python-bytecode:
+	@echo "  PY      $(SRC_DIR)"
+	$(PYTHON) -m compileall -q $(SRC_DIR)
+
 clean:
 	rm -rf $(OBJ_DIR)
+	find $(SRC_DIR) -type d -name __pycache__ -prune -exec rm -rf {} +
 
-.PHONY: all clean
+.PHONY: all clean python-bytecode
