@@ -43,17 +43,21 @@ CSV_COLUMNS = [
     # RAPL power
     "power_watts",
     # BPF latency (sched_delay)
-    "sched_delay_count", "sched_delay_avg_ns",
-    "sched_delay_p50_ns", "sched_delay_p95_ns", "sched_delay_p99_ns",
+    "sched_delay_count", "sched_delay_avg_ns", "sched_delay_p99_ns",
     # BPF latency (runqueue)
-    "runqueue_count", "runqueue_avg_ns",
-    "runqueue_p50_ns", "runqueue_p95_ns", "runqueue_p99_ns",
+    "runqueue_count", "runqueue_avg_ns", "runqueue_p99_ns",
     # BPF latency (wakeup)
-    "wakeup_count", "wakeup_avg_ns",
-    "wakeup_p50_ns", "wakeup_p95_ns", "wakeup_p99_ns",
+    "wakeup_count", "wakeup_avg_ns", "wakeup_p99_ns",
     # BPF latency (preemption)
-    "preemption_count", "preemption_avg_ns",
-    "preemption_p50_ns", "preemption_p95_ns", "preemption_p99_ns",
+    "preemption_count", "preemption_avg_ns", "preemption_p99_ns",
+    # BPF latency (idle_wakeup)
+    "idle_wakeup_count", "idle_wakeup_avg_ns", "idle_wakeup_p99_ns",
+    # BPF latency (migration)
+    "migration_count", "migration_avg_ns", "migration_p99_ns",
+    # BPF latency (slice duration)
+    "slice_count", "slice_avg_ns", "slice_p99_ns",
+    # BPF latency (sleep duration)
+    "sleep_count", "sleep_avg_ns", "sleep_p99_ns",
     # BPF context switch counters
     "total_csw_per_sec",
     "voluntary_csw_per_sec",
@@ -286,7 +290,7 @@ class SchedLatencySource:
             self._parse_line(line.strip(), parsed)
             if parsed:
                 with self._lock:
-                    self.latest = parsed
+                    self.latest.update(parsed)
 
     def stop(self):
         if self.proc:
@@ -302,40 +306,39 @@ class SchedLatencySource:
 
     def _parse_line(self, line, result):
         """Parse one CSV line from sched_latency -c output."""
-        # Format: timestamp,type,count,avg_ns,min_ns,max_ns,p50_ns,p95_ns,p99_ns,total_csw,voluntary_csw,involuntary_csw
+        # Format: timestamp,type,count,avg_ns,min_ns,max_ns,p99_ns,total_csw,voluntary_csw,involuntary_csw
         parts = line.split(",")
-        if len(parts) < 9:
+        if len(parts) < 7:
             return
 
         lat_type = parts[1]
         try:
             count = int(parts[2])
-            avg = int(parts[3])
-            p50 = int(parts[6])
-            p95 = int(parts[7])
-            p99 = int(parts[8])
+            avg   = int(parts[3])
+            # parts[4] = min_ns, parts[5] = max_ns (not stored in CSV)
+            p99   = int(parts[6])
         except (ValueError, IndexError):
             return
 
-        prefix = lat_type  # sched_delay, runqueue, wakeup, preemption
-        result[f"{prefix}_count"] = count
+        prefix = lat_type  # sched_delay, runqueue, wakeup, preemption, ...
+        result[f"{prefix}_count"]  = count
         result[f"{prefix}_avg_ns"] = avg
-        result[f"{prefix}_p50_ns"] = p50
-        result[f"{prefix}_p95_ns"] = p95
         result[f"{prefix}_p99_ns"] = p99
 
-        # Context switch counters — now per-interval since BPF resets after read
-        if len(parts) >= 12:
+        # Context switch counters — per-interval since BPF resets after read
+        if len(parts) >= 10:
             try:
-                result["total_csw_per_sec"] = int(parts[9]) if parts[9] else ""
-                result["voluntary_csw_per_sec"] = int(parts[10]) if parts[10] else ""
-                result["involuntary_csw_per_sec"] = int(parts[11]) if parts[11] else ""
+                result["total_csw_per_sec"]       = int(parts[7]) if parts[7] else ""
+                result["voluntary_csw_per_sec"]   = int(parts[8]) if parts[8] else ""
+                result["involuntary_csw_per_sec"] = int(parts[9]) if parts[9] else ""
             except ValueError:
                 pass
 
     def read(self, interval):
         with self._lock:
-            return dict(self.latest)
+            result = dict(self.latest)
+            self.latest = {}
+            return result
 
 
 # ---------------------------------------------------------------------------

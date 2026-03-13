@@ -32,12 +32,16 @@ SCHED_COLORS = {
 }
 
 SCHED_ORDER = ["default", "s3", "s3+", "s4"]
-LATENCY_PERCENTILES = [("p50", "-"), ("p95", "--"), ("p99", ":")]
+LATENCY_PERCENTILES = [("avg", "-"), ("p99", ":")]
 LATENCY_PLOTS = [
-    ("sched_delay", "Schedule Delay", "latency_sched_delay"),
-    ("runqueue", "Runqueue Latency", "latency_runqueue"),
-    ("wakeup", "Wakeup Latency", "latency_wakeup"),
-    ("preemption", "Preemption Latency", "latency_preemption"),
+    ("sched_delay",  "Schedule Delay",     "latency_sched_delay"),
+    ("runqueue",     "Runqueue Latency",   "latency_runqueue"),
+    ("wakeup",       "Wakeup Latency",     "latency_wakeup"),
+    ("preemption",   "Preemption Latency", "latency_preemption"),
+    ("idle_wakeup",  "Idle CPU Wakeup",    "latency_idle_wakeup"),
+    ("migration",    "Migration Latency",  "latency_migration"),
+    ("slice",        "Slice Duration",     "latency_slice"),
+    ("sleep",        "Sleep Duration",     "latency_sleep"),
 ]
 THROUGHPUT_PLOTS = [
     (
@@ -450,16 +454,25 @@ def plot_throughput(data, scheds, output_dir, metadata=None):
 # ---------------------------------------------------------------------------
 
 SUMMARY_METRICS = [
-    ("cpu_util_pct", "CPU Utilization (%)", False),
-    ("ctx_switches_per_sec", "Context Switches/s", None),
-    ("power_watts", "Power (W)", True),
-    ("sched_delay_p50_ns", "Sched Delay p50 (ns)", True),
-    ("sched_delay_p95_ns", "Sched Delay p95 (ns)", True),
-    ("sched_delay_p99_ns", "Sched Delay p99 (ns)", True),
-    ("runqueue_p50_ns", "Runqueue p50 (ns)", True),
-    ("runqueue_p95_ns", "Runqueue p95 (ns)", True),
-    ("wakeup_p50_ns", "Wakeup p50 (ns)", True),
-    ("preemption_p50_ns", "Preemption p50 (ns)", True),
+    ("cpu_util_pct",          "CPU Utilization (%)",      False),
+    ("ctx_switches_per_sec",  "Context Switches/s",       None),
+    ("power_watts",           "Power (W)",                True),
+    ("sched_delay_avg_ns",    "Sched Delay avg (ns)",     True),
+    ("sched_delay_p99_ns",    "Sched Delay p99 (ns)",     True),
+    ("runqueue_avg_ns",       "Runqueue avg (ns)",        True),
+    ("runqueue_p99_ns",       "Runqueue p99 (ns)",        True),
+    ("wakeup_avg_ns",         "Wakeup avg (ns)",          True),
+    ("wakeup_p99_ns",         "Wakeup p99 (ns)",          True),
+    ("preemption_avg_ns",     "Preemption avg (ns)",      True),
+    ("preemption_p99_ns",     "Preemption p99 (ns)",      True),
+    ("idle_wakeup_avg_ns",    "Idle Wakeup avg (ns)",     True),
+    ("idle_wakeup_p99_ns",    "Idle Wakeup p99 (ns)",     True),
+    ("migration_avg_ns",      "Migration avg (ns)",       True),
+    ("migration_p99_ns",      "Migration p99 (ns)",       True),
+    ("slice_avg_ns",          "Slice Duration avg (ns)",  None),
+    ("slice_p99_ns",          "Slice Duration p99 (ns)",  None),
+    ("sleep_avg_ns",          "Sleep Duration avg (ns)",  None),
+    ("sleep_p99_ns",          "Sleep Duration p99 (ns)",  None),
 ]
 
 

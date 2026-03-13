@@ -2,11 +2,15 @@
  * sched_latency.c - Userspace latency measurement tool for sched_ext
  *
  * Attaches BPF tracepoints to measure scheduler latencies and reports
- * percentile statistics (p50, p95, p99) for:
- *   - Schedule delay    (wakeup → running)
- *   - Runqueue latency  (enqueue → running)
- *   - Wakeup latency    (wakeup → enqueue)
+ * avg and p99 statistics for:
+ *   - Schedule delay     (wakeup → running)
+ *   - Runqueue latency   (enqueue → running)
+ *   - Wakeup latency     (wakeup → enqueue)
  *   - Preemption latency (preempted → re-running)
+ *   - Idle wakeup        (CPU idle → CPU running real task)
+ *   - Migration latency  (runqueue lat for tasks that migrated CPUs)
+ *   - Slice duration     (time task ran before switch-out)
+ *   - Sleep duration     (time voluntarily blocked before wakeup)
  *
  * Also tracks context switch counters (total, voluntary, involuntary).
  *
@@ -26,13 +30,17 @@
 #include "sched_latency.bpf.skel.h"
 
 #define HIST_BUCKETS  32
-#define NR_LAT_TYPES  4
+#define NR_LAT_TYPES  8
 
 static const char *lat_names[NR_LAT_TYPES] = {
 	"sched_delay",
 	"runqueue",
 	"wakeup",
 	"preemption",
+	"idle_wakeup",
+	"migration",
+	"slice",
+	"sleep",
 };
 
 struct hist {
@@ -168,7 +176,7 @@ print_header(void)
 {
 	if (csv_mode) {
 		printf("timestamp,type,count,avg_ns,min_ns,max_ns,"
-		       "p50_ns,p95_ns,p99_ns,"
+		       "p99_ns,"
 		       "total_csw,voluntary_csw,involuntary_csw\n");
 	}
 }
@@ -203,7 +211,7 @@ print_report(int hist_fd, int csw_fd, int nr_cpus)
 {
 	struct hist h;
 	struct csw_counters csw;
-	char b1[32], b2[32], b3[32], b4[32], b5[32];
+	char b1[32], b2[32], b3[32];
 	time_t now = time(NULL);
 	struct tm *tm = localtime(&now);
 	char ts[32];
@@ -234,19 +242,15 @@ print_report(int hist_fd, int csw_fd, int nr_cpus)
 		}
 
 		__u64 avg = h.total_ns / h.count;
-		__u64 p50 = hist_percentile(&h, 50.0);
-		__u64 p95 = hist_percentile(&h, 95.0);
 		__u64 p99 = hist_percentile(&h, 99.0);
 
 		if (csv_mode) {
-			printf("%s,%s,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+			printf("%s,%s,%llu,%llu,%llu,%llu,%llu",
 			       ts, lat_names[t],
 			       (unsigned long long)h.count,
 			       (unsigned long long)avg,
 			       (unsigned long long)h.min_ns,
 			       (unsigned long long)h.max_ns,
-			       (unsigned long long)p50,
-			       (unsigned long long)p95,
 			       (unsigned long long)p99);
 			if (csw_ok)
 				printf(",%llu,%llu,%llu",
@@ -258,15 +262,13 @@ print_report(int hist_fd, int csw_fd, int nr_cpus)
 			printf("\n");
 		} else {
 			printf("  %-14s  n=%-8llu  avg=%-10s  "
-			       "p50=%-10s  p95=%-10s  p99=%-10s  "
+			       "p99=%-10s  "
 			       "min=%-10s  max=%-10s\n",
 			       lat_names[t],
 			       (unsigned long long)h.count,
 			       fmt_ns(avg, b1, sizeof(b1)),
-			       fmt_ns(p50, b2, sizeof(b2)),
-			       fmt_ns(p95, b3, sizeof(b3)),
-			       fmt_ns(p99, b4, sizeof(b4)),
-			       fmt_ns(h.min_ns, b5, sizeof(b5)),
+			       fmt_ns(p99, b2, sizeof(b2)),
+			       fmt_ns(h.min_ns, b3, sizeof(b3)),
 			       fmt_ns(h.max_ns, ts, sizeof(ts)));
 		}
 

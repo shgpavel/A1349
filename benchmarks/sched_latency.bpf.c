@@ -1,11 +1,16 @@
 /*
  * sched_latency.bpf.c - BPF scheduler latency measurement
  *
- * Measures four latency categories via tracepoints:
+ * Measures eight latency categories via tracepoints:
  *   - Schedule delay:     sched_wakeup → sched_switch (task starts running)
  *   - Runqueue latency:   enqueue → sched_switch (time on runqueue)
  *   - Wakeup latency:     sched_wakeup → enqueue
  *   - Preemption latency: stopping(runnable) → next running
+ *   - Idle wakeup:        CPU goes idle → CPU picks up next task
+ *   - Migration latency:  runqueue latency for tasks that ran on a
+ *                         different CPU than where they were enqueued
+ *   - Slice duration:     time a task ran continuously before switch-out
+ *   - Sleep duration:     time a task spent voluntarily blocked before wakeup
  *
  * Enqueue is detected via two optional fentry hooks (whichever is available):
  *   - enqueue_task_fair:    default CFS/EEVDF scheduler
@@ -36,7 +41,11 @@ enum latency_type {
 	LAT_RUNQUEUE     = 1,  /* enqueue → running */
 	LAT_WAKEUP       = 2,  /* wakeup → enqueue */
 	LAT_PREEMPTION   = 3,  /* stopping(runnable) → running */
-	NR_LAT_TYPES     = 4,
+	LAT_IDLE_WAKEUP  = 4,  /* CPU idle → CPU running real task */
+	LAT_MIGRATION    = 5,  /* runqueue lat for tasks that migrated CPUs */
+	LAT_SLICE        = 6,  /* time task ran before being switched out */
+	LAT_SLEEP        = 7,  /* time voluntarily blocked before wakeup */
+	NR_LAT_TYPES     = 8,
 };
 
 struct hist {
@@ -72,9 +81,12 @@ struct {
 
 /* Per-task timestamps for each latency event. */
 struct task_ts {
-	u64 wakeup_ts;    /* last sched_wakeup timestamp */
-	u64 enqueue_ts;   /* last enqueue timestamp */
-	u64 preempt_ts;   /* last preempted (stopping while runnable) timestamp */
+	u64 wakeup_ts;       /* last sched_wakeup timestamp */
+	u64 enqueue_ts;      /* last enqueue timestamp */
+	u64 preempt_ts;      /* last preempted (stopping while runnable) timestamp */
+	u64 run_start_ts;    /* when task last started running (for slice duration) */
+	u64 sleep_start_ts;  /* when task last voluntarily blocked (for sleep duration) */
+	u32 enqueue_cpu;     /* CPU where task was last enqueued (for migration detection) */
 };
 
 struct {
@@ -83,6 +95,18 @@ struct {
 	__type(key, u32);
 	__type(value, struct task_ts);
 } task_timestamps SEC(".maps");
+
+/*
+ * Per-CPU idle start timestamps.
+ * Set when CPU goes idle (next==idle task), cleared when CPU picks up work.
+ * Used to measure LAT_IDLE_WAKEUP.  Not a histogram — persistent state only.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(key_size, sizeof(u32));
+	__uint(value_size, sizeof(u64));
+	__uint(max_entries, 1);
+} idle_ts SEC(".maps");
 
 /* Filter: 0 = all tasks, nonzero = only this tgid */
 const volatile __u32 tgid_filter = 0;
@@ -145,7 +169,7 @@ get_ts(struct task_struct *p)
 
 /*
  * Tracepoint: sched_wakeup
- * Record wakeup timestamp.
+ * Record wakeup timestamp and measure sleep duration.
  */
 SEC("tp_btf/sched_wakeup")
 int BPF_PROG(handle_sched_wakeup, struct task_struct *p)
@@ -157,7 +181,15 @@ int BPF_PROG(handle_sched_wakeup, struct task_struct *p)
 	if (!ts)
 		return 0;
 
-	ts->wakeup_ts = bpf_ktime_get_ns();
+	u64 now = bpf_ktime_get_ns();
+
+	/* Sleep duration: time spent voluntarily blocked */
+	if (ts->sleep_start_ts) {
+		record_latency(LAT_SLEEP, now - ts->sleep_start_ts);
+		ts->sleep_start_ts = 0;
+	}
+
+	ts->wakeup_ts = now;
 	return 0;
 }
 
@@ -182,12 +214,21 @@ int BPF_PROG(handle_sched_wakeup_new, struct task_struct *p)
 /*
  * Tracepoint: sched_switch
  *
- * For the incoming task (next):
- *   - Measure schedule delay (wakeup → running)
- *   - Measure preemption latency (preempt → running)
- *
  * For the outgoing task (prev):
- *   - If still runnable, record preemption timestamp
+ *   - Measure slice duration (run_start_ts → now)
+ *   - If still runnable (preempted): record preemption timestamp
+ *   - If going to sleep (voluntary): record sleep start timestamp
+ *
+ * For CPU idle transitions (based on idle task pid==0):
+ *   - next==idle: CPU going idle, record timestamp
+ *   - prev==idle: CPU coming back from idle, measure LAT_IDLE_WAKEUP
+ *
+ * For the incoming task (next):
+ *   - Measure migration latency if task ran on a different CPU than enqueued
+ *   - Measure schedule delay (wakeup → running)
+ *   - Measure runqueue latency (enqueue → running)
+ *   - Measure preemption latency (preempt → running)
+ *   - Record run_start_ts for next slice duration measurement
  */
 SEC("tp_btf/sched_switch")
 int BPF_PROG(handle_sched_switch,
@@ -209,52 +250,84 @@ int BPF_PROG(handle_sched_switch,
 			csw->voluntary++;
 	}
 
-	/* Outgoing: if still runnable, mark as preempted */
-	if (!filter_task(prev)) {
-		u64 prev_state = BPF_CORE_READ(prev, __state);
-		if (prev_state == 0) {  /* TASK_RUNNING */
-			ts = get_ts(prev);
-			if (ts)
-				ts->preempt_ts = now;
-		}
+	u32 prev_pid = BPF_CORE_READ(prev, pid);
+	u32 next_pid = BPF_CORE_READ(next, pid);
 
+	/* Idle wakeup: CPU was idle (prev is idle task), now running real work */
+	u32 idle_key = 0;
+	u64 *idle_val = bpf_map_lookup_elem(&idle_ts, &idle_key);
+	if (idle_val && prev_pid == 0 && *idle_val) {
+		record_latency(LAT_IDLE_WAKEUP, now - *idle_val);
+		*idle_val = 0;
 	}
 
-	/* Incoming: measure latencies */
-	if (filter_task(next))
+	/* Outgoing: measure slice, then set next timestamp for prev task */
+	if (!filter_task(prev) && prev_pid != 0) {
+		ts = get_ts(prev);
+		if (ts) {
+			/* Slice duration: how long did this task run? */
+			if (ts->run_start_ts) {
+				record_latency(LAT_SLICE, now - ts->run_start_ts);
+				ts->run_start_ts = 0;
+			}
+
+			u64 prev_state = BPF_CORE_READ(prev, __state);
+			if (prev_state == 0) {  /* TASK_RUNNING — preempted */
+				ts->preempt_ts     = now;
+				ts->sleep_start_ts = 0;
+			} else {                /* going to sleep voluntarily */
+				ts->sleep_start_ts = now;
+				ts->preempt_ts     = 0;
+			}
+		}
+	}
+
+	/* CPU going idle: next is idle task, record timestamp */
+	if (idle_val && next_pid == 0)
+		*idle_val = now;
+
+	/* Incoming: skip idle task and filtered tasks */
+	if (filter_task(next) || next_pid == 0)
 		return 0;
 
 	ts = get_ts(next);
 	if (!ts)
 		return 0;
 
+	/* Migration latency: task ran on different CPU than it was enqueued on */
+	if (ts->enqueue_ts) {
+		u32 curr_cpu = bpf_get_smp_processor_id();
+		if (ts->enqueue_cpu != curr_cpu)
+			record_latency(LAT_MIGRATION, now - ts->enqueue_ts);
+	}
+
 	/* Schedule delay: wakeup → now */
 	if (ts->wakeup_ts) {
-		u64 delta = now - ts->wakeup_ts;
-		record_latency(LAT_SCHED_DELAY, delta);
+		record_latency(LAT_SCHED_DELAY, now - ts->wakeup_ts);
 		ts->wakeup_ts = 0;
 	}
 
 	/* Runqueue latency: enqueue → now */
 	if (ts->enqueue_ts) {
-		u64 delta = now - ts->enqueue_ts;
-		record_latency(LAT_RUNQUEUE, delta);
+		record_latency(LAT_RUNQUEUE, now - ts->enqueue_ts);
 		ts->enqueue_ts = 0;
 	}
 
 	/* Preemption latency: preempt → now */
 	if (ts->preempt_ts) {
-		u64 delta = now - ts->preempt_ts;
-		record_latency(LAT_PREEMPTION, delta);
+		record_latency(LAT_PREEMPTION, now - ts->preempt_ts);
 		ts->preempt_ts = 0;
 	}
+
+	/* Record run start for slice duration on next switch-out */
+	ts->run_start_ts = now;
 
 	return 0;
 }
 
 /*
  * Common enqueue logic shared by both CFS and sched_ext hooks.
- * Records enqueue timestamp and measures wakeup latency.
+ * Records enqueue timestamp, enqueue CPU, and measures wakeup latency.
  */
 static __always_inline void
 handle_enqueue(struct task_struct *p)
@@ -275,7 +348,8 @@ handle_enqueue(struct task_struct *p)
 		/* Don't clear wakeup_ts - schedule delay still needs it */
 	}
 
-	ts->enqueue_ts = now;
+	ts->enqueue_ts  = now;
+	ts->enqueue_cpu = bpf_get_smp_processor_id();
 }
 
 /*

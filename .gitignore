@@ -1,4 +1,5 @@
 cache
+**/build/**
 
 # Keep only TeX sources, rendered PDFs, and image assets in TeX project trees.
 theory/**/*
@@ -17,7 +18,6 @@ events/**/*
 !events/**/*.jpg
 !events/**/*.jpeg
 
-benchmarks/build
 benchmarks/__pycache__
 
 results
