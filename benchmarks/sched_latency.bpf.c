@@ -328,6 +328,9 @@ int BPF_PROG(handle_sched_switch,
 /*
  * Common enqueue logic shared by both CFS and sched_ext hooks.
  * Records enqueue timestamp, enqueue CPU, and measures wakeup latency.
+ *
+ * Only called for ENQUEUE_WAKEUP events to avoid spurious measurements
+ * from re-enqueues (migration, priority changes, cgroup moves).
  */
 static __always_inline void
 handle_enqueue(struct task_struct *p)
@@ -353,25 +356,21 @@ handle_enqueue(struct task_struct *p)
 }
 
 /*
- * CFS/EEVDF enqueue hook.
- * Fires when the default fair scheduler enqueues a task.
+ * Generic enqueue hook.
+ * Fires for all scheduler classes (CFS, sched_ext, RT, DL, etc.).
+ *
+ * Only processes ENQUEUE_WAKEUP events (flag bit 0) to avoid recording
+ * re-enqueue events (migration, priority boost, cgroup move) which would
+ * overwrite enqueue_ts and generate spurious LAT_WAKEUP samples.
  */
-SEC("?fentry/enqueue_task_fair")
-int BPF_PROG(handle_cfs_enqueue, struct rq *rq, struct task_struct *p,
+#define ENQUEUE_WAKEUP 1
+SEC("fentry/enqueue_task")
+int BPF_PROG(handle_enqueue_task, struct rq *rq, struct task_struct *p,
 	     int flags)
 {
-	handle_enqueue(p);
-	return 0;
-}
+	if (!(flags & ENQUEUE_WAKEUP))
+		return 0;
 
-/*
- * sched_ext enqueue hook.
- * Fires when any sched_ext scheduler enqueues a task.
- * ? prefix = optional: silently skipped if no sched_ext loaded.
- */
-SEC("?fentry/scx_ops_enqueue_task")
-int BPF_PROG(handle_scx_enqueue, struct task_struct *p)
-{
 	handle_enqueue(p);
 	return 0;
 }
