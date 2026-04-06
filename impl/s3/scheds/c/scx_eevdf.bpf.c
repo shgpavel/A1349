@@ -17,7 +17,7 @@ struct {
 } global_data SEC(".maps");
 
 #define SHARED_DSQ 0
-#define SCALE      100
+#define SCALE      1000
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);

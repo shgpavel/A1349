@@ -7,7 +7,7 @@ Reads CSV files produced by collect.py and generates comparison plots.
 Dependencies: matplotlib, pandas
 
 Usage:
-    python3 visualize.py results/default_*.csv results/s3+_*.csv --output plots/
+    python3 visualize.py results/default_*.csv results/s3+_*.csv results/LAVD_*.csv --output plots/
 """
 
 import argparse
@@ -28,10 +28,11 @@ SCHED_COLORS = {
     "default": "#1f77b4",  # blue
     "s3":      "#ff7f0e",  # orange
     "s3+":     "#2ca02c",  # green
+    "LAVD":    "#8c564b",  # brown
     "s4":      "#d62728",  # red
 }
 
-SCHED_ORDER = ["default", "s3", "s3+", "s4"]
+SCHED_ORDER = ["default", "s3", "s3+", "LAVD", "s4"]
 LATENCY_PERCENTILES = [("avg", "-"), ("p99", ":")]
 LATENCY_PLOTS = [
     ("sched_delay",  "Schedule Delay",     "latency_sched_delay"),

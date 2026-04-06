@@ -1,1 +1,1 @@
-arch/x86/vmlinux.h
+/lib/modules/7.0.0-rc5-1/build/vmlinux.h

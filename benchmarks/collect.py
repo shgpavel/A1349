@@ -8,6 +8,7 @@ All metric sources degrade gracefully if unavailable.
 Usage:
     sudo python3 collect.py --scheduler default --duration 300 --interval 1 --output results/
     sudo python3 collect.py --scheduler s3+ --sched-bin ../impl/s3+/build/scheds/c/scx_eevdf --duration 300
+    sudo python3 collect.py --scheduler LAVD --sched-bin ../scx/target/release/scx_lavd --duration 300
     sudo python3 collect.py --probe
 """
 
@@ -618,7 +619,7 @@ def main():
     )
     parser.add_argument(
         "--scheduler", default="default",
-        help="Scheduler name label (default, s3, s3+, s4)"
+        help="Scheduler name label (default, s3, s3+, LAVD, s4)"
     )
     parser.add_argument(
         "--sched-bin", default=None,

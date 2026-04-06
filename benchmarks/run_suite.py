@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run the benchmark comparison suite for default, s3, and s3+ schedulers.
+Run the benchmark comparison suite for default, s3, s3+, and LAVD schedulers.
 """
 
 import argparse
@@ -26,15 +26,27 @@ def newest_csv(output_dir: Path) -> Path:
     return csvs[-1]
 
 
+def resolve_repo_path(repo_root: Path, path_str: str) -> Path:
+    path = Path(path_str).expanduser()
+    if not path.is_absolute():
+        path = repo_root / path
+    return path.resolve()
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Run the benchmark comparison suite for default, s3, and s3+"
+        description="Run the benchmark comparison suite for default, s3, s3+, and LAVD"
     )
     parser.add_argument("--duration", type=int, default=60)
     parser.add_argument("--interval", type=int, default=1)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--cooldown", type=int, default=30,
                         help="Seconds to wait between scheduler runs (default: 30)")
+    parser.add_argument(
+        "--lavd-bin",
+        default="../scx/target/release/scx_lavd",
+        help="Path to the ../scx LAVD scheduler binary",
+    )
     parser.add_argument("--results-root", default="results")
     parser.add_argument("--plots-root", default="plots")
     args = parser.parse_args()
@@ -43,11 +55,13 @@ def main():
     collect_py = repo_root / "benchmarks" / "collect.py"
     visualize_py = repo_root / "benchmarks" / "visualize.py"
     sched_latency_bin = repo_root / "benchmarks" / "build" / "sched_latency"
+    lavd_bin = resolve_repo_path(repo_root, args.lavd_bin)
 
     schedulers = [
         ("default", None),
         ("s3", repo_root / "impl" / "s3" / "build" / "scheds" / "c" / "scx_eevdf"),
         ("s3+", repo_root / "impl" / "s3+" / "build" / "scheds" / "c" / "scx_eevdf"),
+        ("LAVD", lavd_bin),
     ]
 
     missing_bins = [
@@ -60,6 +74,10 @@ def main():
         for path in missing_bins:
             print(f"  {path}", file=sys.stderr)
         print("Run `make benchmarks-build` first.", file=sys.stderr)
+        print(
+            "The LAVD comparison expects ../scx built with `cargo build --release -p scx_lavd`.",
+            file=sys.stderr,
+        )
         return 1
 
     session = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -127,6 +145,7 @@ def main():
             "default",
             "s3",
             "s3+",
+            "LAVD",
             "--require-schedulers",
         ]
     )
