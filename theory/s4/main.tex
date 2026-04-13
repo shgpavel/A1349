@@ -1,0 +1,339 @@
+\documentclass[12pt, oneside]{book}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{hyperref}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T2A,T1]{fontenc}
+\usepackage{ragged2e}
+
+\usepackage{setspace}
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\everymath{\displaystyle}
+\usepackage{tocloft}
+\cftsetindents{section}{1em}{2em}
+\renewcommand\cfttoctitlefont{\hfill\Large\bfseries}
+\renewcommand\cftaftertoctitle{\hfill\mbox{}}
+\setlength{\cftbeforesecskip}{0.1cm}
+\setlength{\cftbeforesubsecskip}{0.1cm}
+\setlength{\cftbeforetoctitleskip}{0cm}
+\setlength{\cftaftertoctitleskip}{0.4cm}
+\setcounter{tocdepth}{2}
+
+\usepackage[english,russian]{babel}
+\usepackage[a4paper, left=3cm, top=2cm, right=1.5cm, bottom=2cm]{geometry}
+
+\def\letus{%
+        \mathord{\setbox0=\hbox{$\exists$}%
+                \hbox{\kern 0.125\wd0%
+                        \vbox to \ht0{%
+                                \hrule width 0.75\wd0%
+                                \vfill%
+                        \hrule width 0.75\wd0}%
+                        \vrule height \ht0%
+                \kern 0.125\wd0}%
+        }%
+}
+
+\makeatletter
+\renewcommand{\@makeschapterhead}[1]{%
+        \vspace*{0\p@}
+        {\parindent \z@ \center
+                \normalfont
+                \LARGE \bfseries #1\par\nobreak
+                \addcontentsline{toc}{chapter}{#1}
+                \vskip 10\p@
+}}
+\makeatother
+
+\makeatletter
+\renewcommand{\chapter}{%
+        \if@openright\cleardoublepage\else\clearpage\fi
+        \thispagestyle{plain}
+        \global\@topnum\z@
+        \@afterindentfalse
+\secdef\@chapter\@schapter}
+
+\renewcommand{\@makechapterhead}[1]{%
+        \vspace*{0\p@}
+        {\parindent \z@ \raggedright
+                \normalfont
+                \LARGE \bfseries \thechapter\quad #1\par\nobreak
+                \vskip 20\p@
+}}
+\makeatother
+
+\makeatletter
+\newcommand{\custompagestyle}{%
+        \begingroup
+        \renewcommand{\ps@plain}{%
+                \renewcommand{\@oddfoot}{\hfil\thepage\hfil}
+                \renewcommand{\@evenfoot}{\hfil\thepage\hfil}
+                \renewcommand{\@oddhead}{}
+                \renewcommand{\@evenhead}{}
+        }%
+        \pagestyle{plain}
+}
+\makeatother
+
+\newenvironment{customquote}
+{\list{}{\leftmargin=0pt
+                \rightmargin=0pt
+                \topsep=0pt
+                \partopsep=0pt
+                \parsep=2pt
+                \itemsep=0pt
+        }%
+        \normalfont\relax
+\item\relax}
+{\endlist}
+
+\begin{document}
+\thispagestyle{empty}
+\begin{center}
+        \text{\large САНКТ-ПЕТЕРБУРГСКИЙ ГОСУДАРСТВЕННЫЙ УНИВЕРСИТЕТ} \\[3cm]
+        
+        \text{\Large Шаго Павел Евгеньевич} \\[3cm]
+        
+        \textbf{\large ВЫПУСКНАЯ КВАЛИФИКАЦИОННАЯ РАБОТА} \\[1cm]
+
+        \textbf{\Large << Математическое моделирование и реализация планировщика
+        процессов для гетерогенных процессорных архитектур >>} \\[3cm]
+
+        \text{Уровень образования: бакалавариат} \\
+        \text{Прикладная математика и информатика 01.03.02} \\
+        \text{«Прикладная математика, фундаментальная информатика и программирование»} \\ [1cm]
+
+        \begin{flushright}
+        \text{Научный руководитель }\\
+        \text{кандидат физ.-мат. наук, доцент} \\
+        \text{Корхов Владимир Владиславович} \\ [6cm]
+        \end{flushright}
+
+        \text{Санкт-Петербург}\\ \the\year
+
+\end{center}
+
+\newpage
+\custompagestyle
+\setcounter{page}{2}
+\renewcommand{\contentsname}{Содержание}
+\tableofcontents
+
+\newpage
+\chapter*{Введение}
+
+
+\chapter*{Постановка задачи}
+\begin{quote}
+        Объектом исследования являются алгоритмы планирования процессов
+        в операционных системах. Операционная система при этом управляет
+        вычислительным устройством с гетерогенной процессорной архитектурой
+        (Intel Hybrid CPU, ARM big.LITTLE).
+
+        Целью работы является разработка и экспериментальная оценка
+        планировщика, обеспечивающего более высокую эффективность вычислений
+        на гетерогенном оборудовании по сравнению с базовым
+        алгоритмом EEVDF ядра Linux.
+
+        Для достижения цели работы необходимо:
+        \begin{enumerate}
+        \item Проанализировать и выбрать наиболее перспективный
+                подход к разработке планировщика.
+        \item Построить математическую модель, учитывающую
+                вычислительную мощность ядра при вычислении
+                виртуальных дедлайнов задач.
+        \item Реализовать предложенный алгоритм с использованием
+                инфраструктуры sched\_ext и разработать
+                воспроизводимый набор бенчмарков.
+        \item Провести эксперимент на гетерогенном оборудовании
+                и оценить результаты в сравнении с базовым EEVDF.
+        \end{enumerate}
+\end{quote}
+
+
+\chapter*{Обзор литературы}
+\begin{quote}
+
+        \quad Задача эффективного планирования процессов в операционных
+        системах привлекает внимание исследователей с момента появления
+        многозадачных систем. Накопленная литература охватывает как
+        фундаментальные теоретические модели, так и практические фреймворки,
+        принципиально меняющие подходы к разработке новых алгоритмов.
+
+        \quad В книге \cite{leung} систематизированы алгоритмы планирования:
+        от классических FIFO, Round-Robin и приоритетных схем до моделей
+        пропорционального разделения ресурсов. Авторы формализуют ключевые
+        метрики, время ожидания, время оборота и утилизацию ресурсов,
+        и показывают, что оптимальность по одной метрике достигается,
+        как правило, ценой деградации другой. Работа остаётся
+        фундаментальным справочником по теории планирования.
+
+        \quad В учебнике \cite{tanenbaum} описаны практические подходы к реализации
+        планировщиков в операционных системах, включая устройство
+        многоуровневых очередей, механизмы вытеснения и балансировки нагрузки
+        между ядрами. В частности, рассмотрены принципы работы CFS и его
+        преемника EEVDF в ядре Linux, а также ограничения, с которыми
+        сталкивается любой монолитный планировщик при попытке одновременно
+        удовлетворить разнородные нагрузки. Изменение алгоритма требует
+        перекомпиляции ядра и перезагрузки машины, а ошибка в коде
+        планировщика с высокой вероятностью приводит к отказу системы,
+        что делает разработку внутри ядра дорогим процессом.
+
+        \quad В работе \cite{stoica} Stoica и Abdel-Wahab предложили алгоритм
+        Earliest Eligible Virtual Deadline First как механизм пропорционального
+        разделения ресурсов с явными гарантиями задержки. Каждой задаче
+        назначается виртуальное допустимое время $VE$ и виртуальный дедлайн
+        $VD = VE + r/w$, где $r$ составляет объём запрошенного CPU-времени,
+        а $w$ обозначает вес задачи. Глобальное виртуальное время растёт
+        обратно пропорционально суммарному весу активных задач, что
+        гарантирует каждой задаче долю процессора пропорционально её весу.
+        Планировщик выбирает задачу с наименьшим $VD$ среди допустимых,
+        то есть тех, чьё $VE$ не превышает текущего виртуального времени.
+        Это одновременно исключает голодание задач с малым весом и
+        несправедливое вытеснение. В ядре Linux 6.6 EEVDF заменил
+        Completely Fair Scheduler, устранив отсутствие явного механизма
+        задания требований к задержке и непредсказуемость поведения
+        при высокой нагрузке \cite{torvalds}.
+
+        \quad В книге \cite{rice} Rice детально описана технология eBPF,
+        лежащая в основе фреймворка sched\_ext. Рассмотрен полный путь
+        от написания eBPF-программы до её верификации и JIT-компиляции
+        в ядре. Верификатор статически проверяет завершимость кода
+        и безопасность операций с памятью ещё до исполнения, что делает
+        eBPF принципиально более безопасным инструментом расширения ядра
+        по сравнению с загружаемыми модулями.
+
+        \quad В работе \cite{humphries} Humphries и соавторы из Google представили
+        фреймворк ghOST (Google Host OS Threads scheduler), делегирующий
+        решения о планировании агенту в пространстве пользователя.
+        Ядро передаёт события планирования агенту через разделяемую память
+        без копирования данных, агент отвечает управляющими командами.
+        Такая схема открывает разработчику произвольные структуры данных,
+        стандартные профилировщики и быструю итерацию без перезагрузок.
+        Google применила ghOST во внутренних дата-центрах и показала,
+        что специализированный агент способен обеспечивать более низкую
+        задержку, чем штатный планировщик ядра. Фреймворк требует отдельного
+        патча ядра, а обращение к пространству пользователя на критическом
+        пути вносит дополнительную латентность, ограничивая применимость
+        фреймворка средами, где команда контролирует и ядро, и прикладное
+        окружение.
+
+        \quad В репозитории проекта sched\_ext \cite{scx} собрана коллекция
+        планировщиков, реализующих разные стратегии на одной платформе.
+        Сам фреймворк, принятый в основную ветку Linux 6.12 в 2024 году,
+        загружает планировщик как набор eBPF-программ через стандартный
+        системный вызов bpf() без перекомпиляции и перезагрузки \cite{lkml}.
+        Среди реализаций выделяется scx\_simple, минималистичный планировщик
+        на взвешенном виртуальном времени без вытеснения, полезный как
+        воспроизводимый baseline, и Rusty, написанный на языке Rust
+        планировщик с акцентом на балансировку нагрузки с учётом
+        топологии процессора.
+
+        \quad В работе \cite{galin} Galin и Hedblom провели сравнительную оценку
+        планировщиков LAVD, scx\_simple и EEVDF применительно к
+        телекоммуникационным нагрузкам в среде Kubernetes. LAVD
+        (Latency-criticality Aware Virtual Deadline) назначает виртуальные
+        дедлайны с учётом критичности задачи по частоте пробуждений,
+        доле времени ожидания и объёму потребленного CPU. При высокой
+        нагрузке LAVD сократил среднее время оборота задач на 6--81\%
+        и улучшил хвостовую задержку (99-й перцентиль) до 90\%
+        относительно EEVDF. Примечательно, что при умеренной нагрузке
+        scx\_simple стабильно превосходил LAVD, что свидетельствует
+        о том, что преимущество принадлежит не конкретному алгоритму,
+        а гибкости самой инфраструктуры sched\_ext.
+
+        \quad В работе \cite{mao} Mao, Ujcich и Ma представили планировщик
+        Aegis, разработанный для защиты систем аудита безопасности от угрозы
+        суперпродюсера. Процесс с аномально высокой частотой генерации
+        событий способен переполнить буфер сборщика, вынуждая его
+        отбрасывать критически важные записи и тем самым скрывая следы атаки.
+        Aegis реализован поверх sched\_ext с применением обучения с
+        подкреплением (DeepQ-Network) непосредственно внутри eBPF-программы.
+        Авторы зафиксировали, что EEVDF, LAVD и Rusty теряют от 39\% до
+        более чем 98\% системных событий при высокой нагрузке, тогда как
+        Aegis обеспечил нулевую потерю во всех тестовых сценариях при
+        накладных расходах менее 0.5\% в типичных условиях.
+
+        \quad В работе \cite{wang} Wang и соавторы предложили систему
+        Mixture-of-Schedulers, строящую интеллектуальный маршрутизатор
+        поверх портфеля специализированных sched\_ext-планировщиков.
+        Агент непрерывно наблюдает за CPU, вводом/выводом и сетевым
+        трафиком через eBPF и procfs, XGBoost-классификатор распознаёт
+        тип нагрузки, и sched\_ext переключает активный планировщик в
+        реальном времени. Система превзошла EEVDF в 86.4\% тестовых
+        сценариев при накладных расходах около 1.45\% одного ядра
+        процессора, а также показала хорошую обобщаемость при переносе
+        с архитектуры x86\_64 на ARM. Подход демонстрирует, что рост
+        качества планирования достижим не только через усложнение одного
+        алгоритма, но и через разумную специализацию нескольких
+        простых политик.
+
+\end{quote}
+
+
+\chapter{Подходы к реализации планировщиков в ОС}
+
+\chapter{Математические модели планировщиков}
+
+\chapter{Реализация алгоритмов планирования}
+
+\chapter{Описание тестового окружения и экспериментального оборудования}
+
+\chapter{Анализ результатов эксперимента}
+
+\chapter*{Заключение}
+
+\renewcommand{\bibname}{\large СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ}
+\begin{thebibliography}{9}
+        \vspace*{0.3cm}
+        \bibitem{leung}
+        Joseph Y-T. Leung\ Handbook of Scheduling: Algorithms, Models, and
+        Performance Analysis CRC Press 2004
+        \bibitem{galin} Michelle Galin, Anna Hedblom Linux Kernel
+        Scheduler Evaluation
+        for Performance-Critical Telecom Workloads Linköping University 2025
+        \bibitem{mao} Jinsong Mao, Benjamin E. Ujcich, Shiqing Ma
+        Rethinking Provenance
+        Completeness with a Learning-Based Linux Scheduler arXiv 2025
+        \bibitem{wang} Xinbo Wang, Shian Jia, Ziyang Huang, Jing Cao, Mingli Song
+        Mixture-of-Schedulers: An Adaptive Scheduling Agent as a
+        Learned Router for
+        Expert Policies arXiv 2025
+        \bibitem{stoica}
+        Ion Stoica, Hussein Abdel-Wahab Earliest Eligible Virtual Deadline First
+        : A Flexible and Accurate Mechanism for Proportional Share
+        Resource Allocation
+        Old Dominion University 1996
+        \bibitem{shago} A1349 Pavel Shago [Электронный ресурс].
+        -- Режим доступа: \url{https://github.com/shgpavel/A1349} --
+        Дата обращения
+        16.12.2025.
+        \bibitem{tanenbaum} Andrew S. Tanenbaum, Herbert Bos\ MODERN OPERATING
+        SYSTEMS Pearson
+        Education 2023
+        \bibitem{rice}
+        Liz Rice Learning eBPF O’Reilly Media, Inc 2023
+        \bibitem{torvalds}
+        Torvalds L. Linux Kernel [Электронный ресурс] / L. Torvalds.
+        -- Режим доступа: \url{https://github.com/torvalds/linux} --
+        Дата обращения
+        04.12.2025.
+        \bibitem{scx}
+        sched-ext/scx [Электронный ресурс]. -- Режим доступа: \\
+        \url{https://github.com/sched-ext/scx} -- Дата обращения 07.12.2025.
+        \bibitem{lkml}
+        lkml [Электронный ресурс]. -- Режим доступа: \url{https://lkml.org}
+        -- Дата обращения 24.11.2025.
+        \bibitem{humphries}
+        Jack Tigar Humphries, Neel Natu, Ashwin Chaugule, Ofir Weisse,
+        Barret Rhoden, Josh Don, Luigi Rizzo, Oleg Rombakh, Paul Turner,
+        Christoph Lameter\ ghOST: Scheduling Beyond the OS
+        ACM SIGOPS 2021
+\end{thebibliography}
+
+\end{document}

@@ -229,6 +229,7 @@
         \end{columns}
 \end{frame}
 
+
 \begin{frame}{Earliest Eligible Virtual Deadline First Model}
         The ideal reference system is such system where every active
         client $i$ continuously receives share $w_i / W(t)$ of the CPU.
@@ -245,6 +246,7 @@
 
         where $s_i(t_0^i,t)$ is the service received since $t_0^i$.
 \end{frame}
+
 
 \begin{frame}{Earliest Eligible Virtual Deadline First Model}
         A request is runnable only once $v_e \le V(t)$. Among all
@@ -269,6 +271,7 @@
         \end{shadowbox}
 \end{frame}
 
+
 \begin{frame}{Mapping to sched\_ext}
         \begin{columns}
                 \column{0.42\textwidth}
@@ -277,20 +280,20 @@
                         $w_i$   & $\to$ \texttt{p->scx.weight} \\[2pt]
                         $v_i$   & $\to$ \texttt{scx.dsq\_vtime} \\[2pt]
                         $V(t)$  & $\to$ \texttt{vtime\_now} \\[2pt]
-                        $r$     & $\to$ \texttt{SCX\_SLICE\_DFL}
+                        $r$     & $\to$ \texttt{SCX\_SLICE\_DFL} $ ( \Delta ) $
                 \end{tabular}
 
                 \vspace{3.5em}
-                {\footnotesize $ S $ --  integer scale}
-
+                {\footnotesize $ S $ --  integer scaler}
+                
                 \column{0.58\textwidth}
                 \textbf{enqueue:}
-                $$VE_i = \max(v_i,\; V_\mathrm{now} - \Delta)$$
-                $$VD_i = VE_i + \frac{r \cdot S}{w_i}
-                \;\to\; \text{insert by } VD_i$$
+                $$VE_i = \max(v_i,\; V_\mathrm{now} - \Delta),\quad v_i \leftarrow VE_i$$
+                $$VD_i = VE_i + \frac{\Delta \cdot S}{w_i}
+                \;\to\; \text{inserted by } VD_i$$
 
                 \textbf{running:}
-                $$V_\mathrm{now} \leftarrow \max(V_\mathrm{now},\; v_i)$$
+                $$V_\mathrm{now} \leftarrow \max(V_\mathrm{now},\; VE_i)$$
 
                 \textbf{stopping:}
                 $$v_i \leftarrow v_i +
@@ -371,6 +374,7 @@
         \end{columns}
 \end{frame}
 
+
 \begin{frame}{Results}
         \centering
         \includegraphics[width=\textwidth,height=0.87\textheight,keepaspectratio]{res/Fig1.eps}
@@ -378,6 +382,7 @@
         {\tiny \textbf{Figure\ 2.} Test results for builtin EEVDF scheduler
         and implemented sched\_ext EEVDF}
 \end{frame}
+
 
 \begin{frame}{Analysis}
         \begin{columns}
@@ -423,6 +428,7 @@
         \end{columns}
 \end{frame}
 
+
 \begin{frame}{Conclusion}
         \begin{itemize}
                 \item EEVDF scheduling algorithm is faithfully reproducible
@@ -439,6 +445,7 @@
                         targeting heterogeneous CPU platforms
         \end{itemize}
 \end{frame}
+
 
 \begin{frame}{References \& Q/A}
         \begin{thebibliography}{20}
@@ -458,5 +465,131 @@
 
         \end{thebibliography}
 \end{frame}
+
+
+\begin{frame}{Extra}
+        \textbf{Proof that $|\mathrm{lag}_i| < \Delta$ is preserved}
+
+        \vspace{0.15cm}
+        \begin{itemize}
+                \item In the continuous model, a sleeping task accumulates
+                        negative lag $-\tau$ for virtual time $\tau$ it was absent
+                \item Unclamped, it would re-enter with an ancient $v_i$
+                        and claim up to $\tau$ units of "catch-up" service
+                \item The clamp enforces $VE_i \ge V_{\mathrm{now}} - \Delta$,
+                        so at most one quantum $\Delta$ of credit is carried forward
+                \item $\mathrm{lag}_i = \text{(ideal service)} -
+                        \text{(actual service)} \le \Delta$ at the moment of
+                        re-enqueue, which is exactly the bound $|\mathrm{lag}_i| < q$
+                        with $q = \Delta$
+        \end{itemize}
+
+        \vspace{0.1cm}
+        \begin{shadowbox}
+                \footnotesize{The clamp is not a deviation from EEVDF --
+                it \emph{enforces} the lag bound that
+                the continuous model satisfies by construction}
+        \end{shadowbox}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra}
+       \textbf{Critiques:} (a) lazy advancement breaks the $V(t)$ definition;
+        (b) $\texttt{total\_weight}$ is never used in the scheduling formulas.
+
+        \vspace{0.25cm}
+        \textbf{(a) Lazy advancement:}
+        \begin{itemize}
+                \item EEVDF requires $V(t)$ to be monotonically non-decreasing
+                        and to track the frontier of virtual-time consumption
+                \item \texttt{vtime\_now} $\leftarrow \max(\texttt{vtime\_now},\; v_i)$
+                        in \texttt{running()} is exactly such a monotone frontier
+                \item Dispatch ordering depends only on $VD_i$ comparisons,
+                        not on the absolute value of $V_{\mathrm{now}}$ so
+                        ordering is preserved
+        \end{itemize}
+
+        \vspace{0.15cm}
+        \textbf{(b) \texttt{total\_weight} is used -- in \texttt{set\_weight()}:}
+        \begin{itemize}
+                \item When a task's weight changes, the lag must be
+                        rescaled: $\mathrm{lag} \cdot W_{\mathrm{old}} / W_{\mathrm{new}}$
+                \item The code adjusts \texttt{vtime\_now} by exactly this
+                        proportional correction, preserving relative virtual positions
+                \item $W(t)$ is not needed in the per-enqueue formulas because
+                        lazy advancement already subsumes $1/W(t)$ integration
+        \end{itemize}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra}
+      \textbf{Critique:} $S$ appears without justification;
+        if too small, $\Delta \cdot S / w_i$ truncates to zero.
+
+        \vspace{0.3cm}
+        $S = \texttt{SCALE} = 1000$ (source: \texttt{scx\_eevdf.bpf.c:20})
+
+        \vspace{0.3cm}
+        \textbf{Precision analysis} (sched\_ext weight range: $1 \le w \le 10000$;
+        $\Delta = \texttt{SCX\_SLICE\_DFL} = 5\,\text{ms}$):
+
+        \vspace{0.15cm}
+        \begin{columns}
+                \column{0.5\textwidth}
+                \begin{itemize}
+                        \item $w = 1$: $\;\Delta \cdot S / w = 5 \times 10^9$
+                        \item $w = 10000$: $\;\Delta \cdot S / w = 500\,000$
+                        \item Ratio: $10\,000\times$ -- exactly proportional
+                \end{itemize}
+
+                \column{0.5\textwidth}
+                \begin{shadowbox}
+                        \footnotesize{
+                                Non-zero for all $w \le 5 \times 10^9$
+                                
+                                \vspace{0.1cm}
+                                Proportional-share property holds:
+                                heavier tasks get larger $w_i$,
+                                smaller $\Delta \cdot S / w_i$,
+                                earlier virtual deadline
+                        }
+                \end{shadowbox}
+        \end{columns}
+
+        \vspace{0.2cm}
+        \footnotesize{$S$ cancels in all fairness ratios; only the
+        ratio $\Delta \cdot S / w_i$ matters, and it is exact integer arithmetic}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra}
+        \vspace{0.3cm}
+        \textbf{Hypothesis -- slice length difference:}
+        \begin{itemize}
+                \item Kernel EEVDF dynamically shortens the time slice
+                        under contention: $q = q_{\min} \cdot \log_2 n$
+                        (where $n$ is the number of runnable tasks)
+                \item sched\_ext uses a fixed $\Delta = \texttt{SCX\_SLICE\_DFL} = 5\,\text{ms}$
+                        regardless of task count
+                \item Sysbench is a single-threaded CPU-bound workload;
+                        with few tasks, the kernel EEVDF still applies
+                        its default shorter quanta and context-switches more often
+                \item Fewer preemptions $\Rightarrow$ lower context-switch overhead
+                        $\Rightarrow$ higher throughput -- consistent with
+                        the hackbench result (identical: 0.20\,s)
+                        where many tasks eliminate the slice-length advantage
+        \end{itemize}
+
+        \begin{shadowbox2}
+                \footnotesize{The schedulers implement the same EEVDF \emph{policy} and
+                the throughput gap traces to a \emph{parameter} difference,
+                not an algorithmic one}
+        \end{shadowbox2}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
 
 \end{document}

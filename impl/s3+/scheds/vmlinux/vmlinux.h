@@ -1,1 +1,1 @@
-/lib/modules/7.0.0-rc5-1/build/vmlinux.h
+/lib/modules/7.0.0-rc6-1/build/vmlinux.h

@@ -74,7 +74,14 @@ ifeq ($(SCHED_OBJ_DIR),)
   export SCHED_OBJ_DIR := $(ROOT_SRC_DIR)/scheds/c
 endif
 
-all: lib scheds-c
+KVER := $(shell uname -r)
+VMLINUX_SRC := /lib/modules/$(KVER)/build/vmlinux.h
+VMLINUX_LINK := $(ROOT_SRC_DIR)/scheds/vmlinux/vmlinux.h
+
+vmlinux-link:
+	@ln -sfn $(VMLINUX_SRC) $(VMLINUX_LINK)
+
+all: vmlinux-link lib scheds-c
 
 # Individual scheduler targets
 $(C_SCHEDS) $(C_SCHEDS_LIB): lib
@@ -99,6 +106,6 @@ clean:
 install: all
 	$(MAKE) -C $(ROOT_SRC_DIR)/scheds/c install
 
-.PHONY: all lib scheds-c clean install $(C_SCHEDS) $(C_SCHEDS_LIB)
+.PHONY: all vmlinux-link lib scheds-c clean install $(C_SCHEDS) $(C_SCHEDS_LIB)
 
 endif  # End of ifeq ($(skip-makefile),)
