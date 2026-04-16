@@ -62,6 +62,7 @@ def main():
         ("s3", repo_root / "impl" / "s3" / "build" / "scheds" / "c" / "scx_eevdf"),
         ("s3+", repo_root / "impl" / "s3+" / "build" / "scheds" / "c" / "scx_eevdf"),
         ("LAVD", lavd_bin),
+        ("s4", repo_root / "impl" / "s4" / "build" / "scheds" / "c" / "scx_auction"),
     ]
 
     missing_bins = [
@@ -146,6 +147,7 @@ def main():
             "s3",
             "s3+",
             "LAVD",
+            "s4",
             "--require-schedulers",
         ]
     )

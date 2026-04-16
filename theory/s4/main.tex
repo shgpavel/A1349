@@ -1,43 +1,33 @@
 \documentclass[12pt, oneside]{book}
 
+\usepackage[utf8]{inputenc}
+\usepackage[T2A,T1]{fontenc}
+\usepackage[english,russian]{babel}
+\usepackage[a4paper, left=3cm, top=2cm, right=1cm, bottom=2cm]{geometry}
+
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{amsfonts}
 \usepackage{amssymb}
 \usepackage{hyperref}
-
-\usepackage[utf8]{inputenc}
-\usepackage[T2A,T1]{fontenc}
 \usepackage{ragged2e}
-
 \usepackage{setspace}
+
 \onehalfspacing
 \setlength{\parindent}{1.25cm}
 \everymath{\displaystyle}
 \usepackage{tocloft}
 \cftsetindents{section}{1em}{2em}
+
 \renewcommand\cfttoctitlefont{\hfill\Large\bfseries}
 \renewcommand\cftaftertoctitle{\hfill\mbox{}}
+
 \setlength{\cftbeforesecskip}{0.1cm}
 \setlength{\cftbeforesubsecskip}{0.1cm}
 \setlength{\cftbeforetoctitleskip}{0cm}
 \setlength{\cftaftertoctitleskip}{0.4cm}
 \setcounter{tocdepth}{2}
 
-\usepackage[english,russian]{babel}
-\usepackage[a4paper, left=3cm, top=2cm, right=1.5cm, bottom=2cm]{geometry}
-
-\def\letus{%
-        \mathord{\setbox0=\hbox{$\exists$}%
-                \hbox{\kern 0.125\wd0%
-                        \vbox to \ht0{%
-                                \hrule width 0.75\wd0%
-                                \vfill%
-                        \hrule width 0.75\wd0}%
-                        \vrule height \ht0%
-                \kern 0.125\wd0}%
-        }%
-}
 
 \makeatletter
 \renewcommand{\@makeschapterhead}[1]{%
@@ -71,8 +61,8 @@
 \newcommand{\custompagestyle}{%
         \begingroup
         \renewcommand{\ps@plain}{%
-                \renewcommand{\@oddfoot}{\hfil\thepage\hfil}
-                \renewcommand{\@evenfoot}{\hfil\thepage\hfil}
+                \renewcommand{\@oddfoot}{\hfill\thepage}
+                \renewcommand{\@evenfoot}{\hfill\thepage}
                 \renewcommand{\@oddhead}{}
                 \renewcommand{\@evenhead}{}
         }%
@@ -92,30 +82,46 @@
 \item\relax}
 {\endlist}
 
+
 \begin{document}
 \thispagestyle{empty}
 \begin{center}
-        \text{\large САНКТ-ПЕТЕРБУРГСКИЙ ГОСУДАРСТВЕННЫЙ УНИВЕРСИТЕТ} \\[3cm]
+        \textbf{САНКТ-ПЕТЕРБУРГСКИЙ ГОСУДАРСТВЕННЫЙ УНИВЕРСИТЕТ}
+
+        \vspace{1em}
+        \textit{Факультет прикладной математики -- процессов управления}
+
+        \vspace{5em}
+        \textbf{\large Шаго Павел Евгеньевич}
+
+        \vspace{2em}
+        \textbf{\Large Выпускная квалификационная работа}
         
-        \text{\Large Шаго Павел Евгеньевич} \\[3cm]
-        
-        \textbf{\large ВЫПУСКНАЯ КВАЛИФИКАЦИОННАЯ РАБОТА} \\[1cm]
+        \vspace{2.5em}
+        \textbf{\Large «Математическое моделирование и реализация планировщика
+        процессов для гетерогенных процессорных архитектур»}
 
-        \textbf{\Large << Математическое моделирование и реализация планировщика
-        процессов для гетерогенных процессорных архитектур >>} \\[3cm]
+        \vspace{4em}
+        Уровень образования: бакалавриат \\
+        01.03.02 Прикладная математика и информатика \\
+        «Прикладная математика, фундаментальная информатика и программирование»
 
-        \text{Уровень образования: бакалавариат} \\
-        \text{Прикладная математика и информатика 01.03.02} \\
-        \text{«Прикладная математика, фундаментальная информатика и программирование»} \\ [1cm]
-
+        \vspace{4em}
         \begin{flushright}
-        \text{Научный руководитель }\\
-        \text{кандидат физ.-мат. наук, доцент} \\
-        \text{Корхов Владимир Владиславович} \\ [6cm]
+                Научный руководитель \\
+                кандидат физ.-мат. наук, доцент \\
+                Корхов Владимир Владиславович
         \end{flushright}
 
-        \text{Санкт-Петербург}\\ \the\year
+        \begin{flushright}
+                Рецензент \\
+                Эксперт по архитектуре и сетевому стеку \\
+                ООО НИЦ АЭРОДИСК \\
+                Анохин Юрий Владимирович
+        \end{flushright}
 
+        \vfill
+        Санкт-Петербург\\ \the\year
 \end{center}
 
 \newpage
@@ -127,13 +133,11 @@
 \newpage
 \chapter*{Введение}
 
-
 \chapter*{Постановка задачи}
 \begin{quote}
         Объектом исследования являются алгоритмы планирования процессов
-        в операционных системах. Операционная система при этом управляет
-        вычислительным устройством с гетерогенной процессорной архитектурой
-        (Intel Hybrid CPU, ARM big.LITTLE).
+        в операционных системах на вычислительных устройствах с гетерогенной
+        процессорной архитектурой (Intel Hybrid CPU, ARM big.LITTLE).
 
         Целью работы является разработка и экспериментальная оценка
         планировщика, обеспечивающего более высокую эффективность вычислений
@@ -142,19 +146,17 @@
 
         Для достижения цели работы необходимо:
         \begin{enumerate}
-        \item Проанализировать и выбрать наиболее перспективный
-                подход к разработке планировщика.
-        \item Построить математическую модель, учитывающую
-                вычислительную мощность ядра при вычислении
-                виртуальных дедлайнов задач.
-        \item Реализовать предложенный алгоритм с использованием
-                инфраструктуры sched\_ext и разработать
-                воспроизводимый набор бенчмарков.
-        \item Провести эксперимент на гетерогенном оборудовании
-                и оценить результаты в сравнении с базовым EEVDF.
+                \item Проанализировать и определить наиболее перспективный
+                        подход к реализации планировщика.
+                \item Построить математическую модель, учитывающую
+                        различную вычислительную мощность у ядер процессора.
+                \item Реализовать предложенный алгоритм с использованием
+                        инфраструктуры sched\_ext и разработать
+                        воспроизводимый набор бенчмарков.
+                \item Провести эксперимент на гетерогенном оборудовании
+                        и оценить результаты в сравнении с базовым EEVDF.
         \end{enumerate}
 \end{quote}
-
 
 \chapter*{Обзор литературы}
 \begin{quote}
@@ -173,7 +175,8 @@
         как правило, ценой деградации другой. Работа остаётся
         фундаментальным справочником по теории планирования.
 
-        \quad В учебнике \cite{tanenbaum} описаны практические подходы к реализации
+        \quad В учебнике \cite{tanenbaum} описаны практические
+        подходы к реализации
         планировщиков в операционных системах, включая устройство
         многоуровневых очередей, механизмы вытеснения и балансировки нагрузки
         между ядрами. В частности, рассмотрены принципы работы CFS и его
@@ -208,7 +211,8 @@
         eBPF принципиально более безопасным инструментом расширения ядра
         по сравнению с загружаемыми модулями.
 
-        \quad В работе \cite{humphries} Humphries и соавторы из Google представили
+        \quad В работе \cite{humphries} Humphries и соавторы из
+        Google представили
         фреймворк ghOST (Google Host OS Threads scheduler), делегирующий
         решения о планировании агенту в пространстве пользователя.
         Ядро передаёт события планирования агенту через разделяемую память
@@ -275,7 +279,6 @@
 
 \end{quote}
 
-
 \chapter{Подходы к реализации планировщиков в ОС}
 
 \chapter{Математические модели планировщиков}
@@ -288,7 +291,7 @@
 
 \chapter*{Заключение}
 
-\renewcommand{\bibname}{\large СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ}
+\renewcommand{\bibname}{\large Список литературы}
 \begin{thebibliography}{9}
         \vspace*{0.3cm}
         \bibitem{leung}
@@ -300,7 +303,8 @@
         \bibitem{mao} Jinsong Mao, Benjamin E. Ujcich, Shiqing Ma
         Rethinking Provenance
         Completeness with a Learning-Based Linux Scheduler arXiv 2025
-        \bibitem{wang} Xinbo Wang, Shian Jia, Ziyang Huang, Jing Cao, Mingli Song
+        \bibitem{wang} Xinbo Wang, Shian Jia, Ziyang Huang, Jing Cao,
+        Mingli Song
         Mixture-of-Schedulers: An Adaptive Scheduling Agent as a
         Learned Router for
         Expert Policies arXiv 2025
