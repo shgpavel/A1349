@@ -8,10 +8,10 @@
  *   ──────────────────────  ────────────────────────────────────────────────────
  *   valuation v_i           task->scx.weight  (Linux nice/priority)
  *   length l_i              EWMA of observed run-time ns per activation
- *   effective value φ_P     v - C_P * l/slice   (P-core, l quanta at full speed)
- *   effective value φ_E     v - C_E * l*σ/slice (E-core, σ = max_cap/min_cap)
+ *   effective value φ_P     v*slice - C_P * l_ns       (ns units, no quantization)
+ *   effective value φ_E     v*slice - C_E * l_ns * σ   (σ = max_cap/min_cap)
  *   allocation κ ∈ {P,E}    DSQ chosen by argmax φ_κ
- *   VCG payment p_i         posted price: C_κ * consumed_quanta  (§6.3 approx.)
+ *   VCG payment p_i         posted price: C_κ * consumed_ns / slice (§6.3 approx.)
  *   budget B_i              token bucket; time-based replenishment ∝ weight
  *   budget-depleted task    → AUCTION_DSQ_STARVED (lowest priority)
  *
@@ -20,9 +20,10 @@
  *   AUCTION_DSQ_E      — low-capacity  (E-core) run queue
  *   AUCTION_DSQ_STARVED— budget-exhausted fallback (runs last)
  *
- * On homogeneous CPUs (all capacities = 1024): σ = 1, C_E ≥ C_P/2 ⇒ φ_P ≥ φ_E
- * for all tasks, so all tasks queue to AUCTION_DSQ_P.  Both DSQs are served by
- * all CPUs (work-stealing), so behaviour degenerates to EEVDF-equivalent.
+ * P/E crossover: φ_P ≥ φ_E iff C_E * σ ≥ C_P (length-independent).
+ * φ magnitude varies continuously with l_ns — enables proportional starvation
+ * ordering.  On homogeneous (σ=1): all tasks go to DSQ_E; work-stealing serves
+ * both DSQs so behaviour degenerates to EEVDF-equivalent.
  *
  * Virtual-time accounting (stopping callback) is taken directly from s3+:
  *   svc_vtime = consumed_ns * cpu_cap * SCALE / CAPACITY_SCALE
@@ -40,19 +41,17 @@ char _license[] SEC("license") = "GPL";
 #define P_CAP_PCT           90     /* CPU with cap ≥ 90% of max = P-core      */
 
 /*
- * Per-quantum costs (§3.2 of model).  In "phi units" = weight units.
- * C_P > C_E: P-core is faster but more expensive per quantum.
- * At default nice=0 weight=1024, a task is net-positive on P-core only if
- * its estimated length < weight / C_P = 1 quantum (very short burst).
- * Adjust C_P / C_E to tune the crossover point.
+ * Per-ns costs (§3.2 of model, continuous formulation).
+ * φ_P = weight*slice - C_P*len_ns,  φ_E = weight*slice - C_E*len_ns*σ.
+ * C_P > C_E: P-core faster, higher opportunity cost per ns.
  */
-#define C_P_DEF             512    /* default cost/quantum on P-core          */
-#define C_E_DEF             256    /* default cost/quantum on E-core          */
+#define C_P_DEF             512    /* default cost on P-core                  */
+#define C_E_DEF             256    /* default cost on E-core                  */
 
 /*
  * Budget (§1.3 / §3.3): token-bucket mechanism.
  *   budget_max  = weight * BUDGET_MUL
- *   payment     = C_κ per quantum consumed
+ *   payment     = C_κ * consumed_ns / slice  (proportional, no ceiling)
  *   replenish   = idle_ns * weight / REPLENISH_DIV  (per enqueue, on wake-up)
  *   starved     = budget < budget_max / STARVE_FRAC
  */
@@ -60,6 +59,21 @@ char _license[] SEC("license") = "GPL";
 #define REPLENISH_DIV       5000000ULL /* replenish rate divisor (ns/unit)   */
 #define REPLENISH_IDLE_CAP  1000000000ULL /* cap idle_ns at 1 s to prevent overflow */
 #define STARVE_FRAC         10     /* starved if budget < budget_max/10       */
+
+/*
+ * Budget-ratio routing: tasks with budget ≥ BURST_THRESHOLD_PCT% of max are
+ * considered bursty (sleep-heavy) and routed to DSQ_P; tasks below are
+ * CPU-bound and routed to DSQ_E.  Replaces the φ_P≥φ_E comparison, which
+ * was σ-determined and thus task-length-independent.
+ */
+#define BURST_THRESHOLD_PCT 50     /* ≥ 50% budget → bursty → P-core         */
+
+/*
+ * Starvation vd penalty divisor for proportional ordering within DSQ_STARVED.
+ * φ deficit is in ns-scale units (up to ~5e9); dividing by STARVE_PHI_DIV
+ * maps it to ~0–10 slice-equivalents of extra vd delay.
+ */
+#define STARVE_PHI_DIV      1000ULL /* ns-φ deficit → vd penalty units        */
 
 /* virtual-time arithmetic (matches s3+) */
 #define SCALE               100
@@ -241,11 +255,22 @@ add_vtime(struct auction_ctx *gdata, s64 delta)
 /*
  * Compute per-task effective values φ_P and φ_E (model §5.2).
  *
- *   φ_P = weight - C_P * len_quanta
- *   φ_E = weight - C_E * ceil(len_quanta * σ)   σ = max_cap / min_cap
+ * Continuous ns formulation — no quantization to integer quanta:
  *
- * We work in "weight units"; len_quanta = len_est_ns / SCX_SLICE_DFL.
- * Returned as signed 64-bit integers; negative means "net cost > net value".
+ *   φ_P = weight * slice - C_P * len_est_ns
+ *   φ_E = weight * slice - C_E * len_est_ns * σ    σ = max_cap / min_cap
+ *
+ * weight is scaled by slice so both terms share nanosecond units.
+ * φ > 0: task has positive net value on that core type.
+ * φ < 0: cost exceeds value — task is consuming more than it contributes.
+ *
+ * P/E allocation decision: φ_P ≥ φ_E iff C_E * σ ≥ C_P (length cancels
+ * in the comparison, so the crossover is set by topology + cost parameters).
+ * The magnitude of φ now varies continuously with len_est_ns, enabling
+ * proportional starvation ordering and future priority modulation.
+ *
+ * Overflow: max(weight)=49152, slice=5e6 → weight*slice ≈ 2.5e11 < s64_max.
+ *           max(C_E * len * max_cap) = 256 * 5e6 * 2048 ≈ 2.6e12 < u64_max.
  */
 static __always_inline void
 compute_phi(u32 weight, u64 len_est_ns,
@@ -253,29 +278,16 @@ compute_phi(u32 weight, u64 len_est_ns,
 	    u32 cost_p, u32 cost_e,
 	    s64 *phi_p_out, s64 *phi_e_out)
 {
-	u64 slice = SCX_SLICE_DFL;
+	u64 slice = SCX_SLICE_DFL ?: 5000000;
+	u32 mc    = min_cap ? min_cap : CAPACITY_SCALE;
 
-	if (!slice)
-		slice = 5000000; /* 5 ms fallback */
+	u64 w_slice    = (u64)weight * slice;
+	u64 cost_p_ns  = (u64)cost_p * len_est_ns;
+	/* C_E * len_ns * σ = C_E * len_ns * max_cap / min_cap */
+	u64 cost_e_ns  = (u64)cost_e * len_est_ns * (u64)max_cap / (u64)mc;
 
-	/* l_P = ceil(len_est_ns / slice) */
-	u64 len_p = (len_est_ns + slice - 1) / slice;
-	if (!len_p)
-		len_p = 1;
-
-	/*
-	 * l_E = ceil(l_P * σ) = ceil(len_est_ns * max_cap / (min_cap * slice))
-	 * Use ceiling division to be conservative (E-core might be slower).
-	 */
-	u32 mc = min_cap ? min_cap : CAPACITY_SCALE;
-	u64 len_e_num = len_est_ns * (u64)max_cap;
-	u64 len_e_den = (u64)mc * slice;
-	u64 len_e     = (len_e_num + len_e_den - 1) / len_e_den;
-	if (!len_e)
-		len_e = 1;
-
-	*phi_p_out = (s64)(u64)weight - (s64)((u64)cost_p * len_p);
-	*phi_e_out = (s64)(u64)weight - (s64)((u64)cost_e * len_e);
+	*phi_p_out = (s64)w_slice - (s64)cost_p_ns;
+	*phi_e_out = (s64)w_slice - (s64)cost_e_ns;
 }
 
 /*
@@ -313,11 +325,9 @@ BPF_STRUCT_OPS(auction_select_cpu,
 {
 	struct auction_ctx *gdata = get_ctx();
 	struct auction_task_ctx *tctx;
-	u32 max_cap, min_cap, weight;
-	u32 cost_p, cost_e;
+	u32 max_cap;
 	bool is_idle = false;
 	s32 cpu;
-	s64 phi_p, phi_e;
 	bool want_p;
 	u64 desired_dsq, cpu_dsq;
 
@@ -328,18 +338,23 @@ BPF_STRUCT_OPS(auction_select_cpu,
 	if (!gdata)
 		return cpu;
 
-	max_cap  = gdata->max_capacity  ?: CAPACITY_SCALE;
-	min_cap  = gdata->min_capacity  ?: CAPACITY_SCALE;
-	cost_p   = gdata->cost_p        ?: C_P_DEF;
-	cost_e   = gdata->cost_e        ?: C_E_DEF;
-	weight   = p->scx.weight        ?: 1;
+	max_cap = gdata->max_capacity ?: CAPACITY_SCALE;
 
 	tctx = get_task_ctx(p, false);
-	u64 len_est = tctx ? tctx->len_est_ns : (u64)SCX_SLICE_DFL;
-
-	compute_phi(weight, len_est, max_cap, min_cap, cost_p, cost_e,
-		    &phi_p, &phi_e);
-	want_p      = (phi_p >= phi_e);
+	if (tctx && tctx->last_stop_ns) {
+		/*
+		 * Task has run before: reuse budget-ratio routing decision
+		 * cached by the last enqueue.  Avoids a redundant map lookup
+		 * and division on every wake-up.
+		 */
+		want_p = tctx->on_p_type;
+	} else {
+		/*
+		 * New task (enable() just ran): budget = budget_max = full.
+		 * Full budget → bursty classification → P-core.
+		 */
+		want_p = true;
+	}
 	desired_dsq = want_p ? AUCTION_DSQ_P : AUCTION_DSQ_E;
 	cpu_dsq     = dsq_for_cpu((u32)cpu, max_cap);
 
@@ -382,12 +397,17 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	cost_e  = gdata->cost_e       ?: C_E_DEF;
 	weight  = p->scx.weight       ?: 1;
 
-	/* Replenish budget from idle time (model §6.1 step 5 analogue). */
-	budget_replenish(tctx, bpf_ktime_get_ns());
+	/*
+	 * Replenish budget from idle time — only meaningful when the task is
+	 * waking from sleep.  Preempted/migrated tasks haven't been idle, so
+	 * skip the ktime_get_ns() call entirely.
+	 */
+	if (enq_flags & SCX_ENQ_WAKEUP)
+		budget_replenish(tctx, bpf_ktime_get_ns());
 
 	/*
-	 * Compute effective values φ_P and φ_E.
-	 * Use EWMA length estimate; fall back to one quantum if uninitialized.
+	 * Compute φ_P and φ_E in continuous ns units (no quantization).
+	 * Used below for proportional starvation ordering; not for P/E routing.
 	 */
 	u64 len_est = tctx->len_est_ns ?: (u64)(SCX_SLICE_DFL ?: 5000000);
 	compute_phi(weight, len_est, max_cap, min_cap, cost_p, cost_e,
@@ -412,27 +432,36 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	/*
 	 * Budget check: exhausted tasks → AUCTION_DSQ_STARVED.
 	 * budget_max may be 0 if enable() hasn't run yet; treat as not starved.
+	 *
+	 * Proportional starvation ordering: tasks with φ < 0 (cost > value)
+	 * get an extra vd penalty proportional to their deficit so that heavier
+	 * CPU offenders wait longer within STARVED before being dispatched.
+	 * (Static 1<<32 bump was a uniform shift — no differentiation.)
 	 */
 	if (tctx->budget_max &&
 	    tctx->budget < tctx->budget_max / STARVE_FRAC) {
-		/*
-		 * Push vd far into the future so starved tasks run last.
-		 * We still preserve relative ordering among starved tasks.
-		 */
-		vd += (u64)1 << 32;
+		s64 phi = (phi_p < phi_e) ? phi_p : phi_e; /* worst-case φ */
+		if (phi < 0)
+			vd += (u64)(-phi) / STARVE_PHI_DIV;
 		dsq_id = AUCTION_DSQ_STARVED;
 		tctx->on_p_type = 0;
 		goto insert;
 	}
 
 	/*
-	 * Auction decision (model §6.1 step 3 / §5.2):
-	 * Assign to whichever cluster type maximises φ_κ.
+	 * Budget-ratio routing (§impl): bursty tasks keep high budget because
+	 * they sleep often; CPU-bound tasks drain it.  Route on that signal
+	 * rather than φ_P≥φ_E, which is length-independent (reduces to C_E*σ≥C_P)
+	 * and would send all tasks to the same DSQ for a given topology.
 	 *
-	 * If φ_P = φ_E (homogeneous or identical costs for this task), prefer
-	 * AUCTION_DSQ_P as the convention.
+	 * budget_ratio ≥ BURST_THRESHOLD_PCT → bursty → DSQ_P (interactive fit)
+	 * budget_ratio <  BURST_THRESHOLD_PCT → cpu-bound → DSQ_E (offload)
 	 */
-	if (phi_p >= phi_e) {
+	bool want_p_enq = tctx->budget_max
+		? ((tctx->budget * 100 / tctx->budget_max) >= BURST_THRESHOLD_PCT)
+		: true;
+
+	if (want_p_enq) {
 		dsq_id          = AUCTION_DSQ_P;
 		tctx->on_p_type = 1;
 	} else {
@@ -538,10 +567,15 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 		/* Determine whether this CPU is P-type or E-type. */
 		cost_kappa = cpu_is_p_type(cpu, (u32)max_cap) ? cost_p : cost_e;
 
-		u64 quanta = (consumed + slice - 1) / slice; /* ceiling */
-		if (!quanta)
-			quanta = 1;
-		u64 payment = (u64)cost_kappa * quanta;
+		/*
+		 * Proportional payment: C_κ * consumed_ns / slice.
+		 * Old ceiling-quanta approach made short tasks overpay
+		 * (1 ns cost same as 5 ms), biasing them toward STARVED.
+		 * Minimum of 1 prevents free rides for sub-µs slices.
+		 */
+		u64 payment = (u64)cost_kappa * consumed / slice;
+		if (!payment && consumed)
+			payment = 1;
 
 		if (tctx->budget >= payment)
 			tctx->budget -= payment;
