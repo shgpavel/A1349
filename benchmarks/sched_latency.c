@@ -62,6 +62,13 @@ static int  interval_s    = 1;
 static int  duration_s    = 0;
 static int  csv_mode      = 0;
 
+/*
+ * Userspace snapshots for race-free interval deltas.
+ * BPF side never resets; we subtract previous cumulative value.
+ */
+static struct hist         prev_hist[NR_LAT_TYPES];
+static struct csw_counters prev_csw;
+
 static const char help_fmt[] =
 "sched_ext latency measurement tool.\n"
 "\n"
@@ -136,8 +143,55 @@ read_csw(int map_fd, struct csw_counters *out, int nr_cpus)
 }
 
 /*
- * Estimate a percentile from a log2 histogram.
- * Returns the upper bound of the bucket containing the target count.
+ * Compute delta = curr - prev across buckets and counters.
+ * Stores curr into prev for the next interval.
+ *
+ * BPF-side min/max are cumulative-since-boot and cannot be delta-subtracted,
+ * so approximate per-interval min/max from the delta bucket distribution:
+ * min ≈ lower bound of lowest nonzero delta bucket, max ≈ upper bound of
+ * highest. Coarse (log2 buckets) but honest per-interval.
+ */
+static void
+hist_delta(const struct hist *curr, struct hist *prev, struct hist *out)
+{
+	int lo_b = -1, hi_b = -1;
+
+	/*
+	 * Guard u64 underflow: counters are cumulative and only ever grow,
+	 * but a partial read across CPU migration could observe prev > curr.
+	 * Clamp to 0 rather than wrapping to ~2^64.
+	 */
+	out->count    = curr->count    >= prev->count    ? curr->count    - prev->count    : 0;
+	out->total_ns = curr->total_ns >= prev->total_ns ? curr->total_ns - prev->total_ns : 0;
+	for (int b = 0; b < HIST_BUCKETS; b++) {
+		__u64 d = curr->bucket[b] >= prev->bucket[b]
+			? curr->bucket[b] - prev->bucket[b]
+			: 0;
+		out->bucket[b] = d;
+		if (d) {
+			if (lo_b < 0)
+				lo_b = b;
+			hi_b = b;
+		}
+	}
+	out->min_ns = (lo_b < 0) ? 0 : ((lo_b == 0) ? 0 : (1ULL << lo_b));
+	out->max_ns = (hi_b < 0) ? 0 : (1ULL << (hi_b + 1));
+	*prev = *curr;
+}
+
+static void
+csw_delta(const struct csw_counters *curr, struct csw_counters *prev,
+	  struct csw_counters *out)
+{
+	out->total       = curr->total       - prev->total;
+	out->voluntary   = curr->voluntary   - prev->voluntary;
+	out->involuntary = curr->involuntary - prev->involuntary;
+	*prev = *curr;
+}
+
+/*
+ * Estimate a percentile from a log2 histogram via linear interpolation
+ * within the containing bucket (assumes uniform distribution in bucket).
  */
 static __u64
 hist_percentile(struct hist *h, double pct)
@@ -145,13 +199,25 @@ hist_percentile(struct hist *h, double pct)
 	if (!h->count)
 		return 0;
 
-	__u64 target = (__u64)(h->count * pct / 100.0);
-	__u64 cumul  = 0;
+	double target = h->count * pct / 100.0;
+	__u64  cumul  = 0;
 
 	for (int b = 0; b < HIST_BUCKETS; b++) {
-		cumul += h->bucket[b];
-		if (cumul >= target)
-			return 1ULL << (b + 1); /* upper bound of bucket */
+		__u64 bkt = h->bucket[b];
+		if (!bkt)
+			continue;
+
+		if (cumul + bkt >= target) {
+			__u64 lo = (b == 0) ? 0 : (1ULL << b);
+			__u64 hi = 1ULL << (b + 1);
+			double frac = (target - cumul) / (double)bkt;
+			if (frac < 0)
+				frac = 0;
+			if (frac > 1)
+				frac = 1;
+			return lo + (__u64)(frac * (hi - lo));
+		}
+		cumul += bkt;
 	}
 
 	return 1ULL << HIST_BUCKETS;
@@ -181,36 +247,11 @@ print_header(void)
 	}
 }
 
-/*
- * Zero a single histogram entry across all CPUs.
- */
-static void
-zero_hist(int map_fd, __u32 type, int nr_cpus)
-{
-	struct hist per_cpu[nr_cpus];
-
-	memset(per_cpu, 0, sizeof(per_cpu));
-	bpf_map_update_elem(map_fd, &type, per_cpu, BPF_ANY);
-}
-
-/*
- * Zero context switch counters across all CPUs.
- */
-static void
-zero_csw(int map_fd, int nr_cpus)
-{
-	struct csw_counters per_cpu[nr_cpus];
-	__u32 key = 0;
-
-	memset(per_cpu, 0, sizeof(per_cpu));
-	bpf_map_update_elem(map_fd, &key, per_cpu, BPF_ANY);
-}
-
 static void
 print_report(int hist_fd, int csw_fd, int nr_cpus)
 {
-	struct hist h;
-	struct csw_counters csw;
+	struct hist curr, dh;
+	struct csw_counters curr_csw, dcsw;
 	char b1[32], b2[32], b3[32];
 	time_t now = time(NULL);
 	struct tm *tm = localtime(&now);
@@ -218,45 +259,49 @@ print_report(int hist_fd, int csw_fd, int nr_cpus)
 
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	/* Read context switch counters once per interval */
-	int csw_ok = (read_csw(csw_fd, &csw, nr_cpus) == 0);
+	/* Cumulative read, then compute delta vs. prev snapshot. */
+	int csw_ok = (read_csw(csw_fd, &curr_csw, nr_cpus) == 0);
+	if (csw_ok)
+		csw_delta(&curr_csw, &prev_csw, &dcsw);
 
 	if (!csv_mode) {
 		printf("\n--- %s ---\n", ts);
 		if (csw_ok) {
 			printf("  context switches: total=%llu  voluntary=%llu  involuntary=%llu\n",
-			       (unsigned long long)csw.total,
-			       (unsigned long long)csw.voluntary,
-			       (unsigned long long)csw.involuntary);
+			       (unsigned long long)dcsw.total,
+			       (unsigned long long)dcsw.voluntary,
+			       (unsigned long long)dcsw.involuntary);
 		}
 	}
 
 	for (__u32 t = 0; t < NR_LAT_TYPES; t++) {
-		if (read_hist(hist_fd, t, &h, nr_cpus) < 0)
+		if (read_hist(hist_fd, t, &curr, nr_cpus) < 0)
 			continue;
 
-		if (!h.count) {
+		hist_delta(&curr, &prev_hist[t], &dh);
+
+		if (!dh.count) {
 			if (!csv_mode)
 				printf("  %-14s (no samples)\n", lat_names[t]);
 			continue;
 		}
 
-		__u64 avg = h.total_ns / h.count;
-		__u64 p99 = hist_percentile(&h, 99.0);
+		__u64 avg = dh.total_ns / dh.count;
+		__u64 p99 = hist_percentile(&dh, 99.0);
 
 		if (csv_mode) {
 			printf("%s,%s,%llu,%llu,%llu,%llu,%llu",
 			       ts, lat_names[t],
-			       (unsigned long long)h.count,
+			       (unsigned long long)dh.count,
 			       (unsigned long long)avg,
-			       (unsigned long long)h.min_ns,
-			       (unsigned long long)h.max_ns,
+			       (unsigned long long)dh.min_ns,
+			       (unsigned long long)dh.max_ns,
 			       (unsigned long long)p99);
 			if (csw_ok)
 				printf(",%llu,%llu,%llu",
-				       (unsigned long long)csw.total,
-				       (unsigned long long)csw.voluntary,
-				       (unsigned long long)csw.involuntary);
+				       (unsigned long long)dcsw.total,
+				       (unsigned long long)dcsw.voluntary,
+				       (unsigned long long)dcsw.involuntary);
 			else
 				printf(",,,");
 			printf("\n");
@@ -265,20 +310,13 @@ print_report(int hist_fd, int csw_fd, int nr_cpus)
 			       "p99=%-10s  "
 			       "min=%-10s  max=%-10s\n",
 			       lat_names[t],
-			       (unsigned long long)h.count,
+			       (unsigned long long)dh.count,
 			       fmt_ns(avg, b1, sizeof(b1)),
 			       fmt_ns(p99, b2, sizeof(b2)),
-			       fmt_ns(h.min_ns, b3, sizeof(b3)),
-			       fmt_ns(h.max_ns, ts, sizeof(ts)));
+			       fmt_ns(dh.min_ns, b3, sizeof(b3)),
+			       fmt_ns(dh.max_ns, ts, sizeof(ts)));
 		}
-
-		/* Reset this histogram so next interval starts fresh */
-		zero_hist(hist_fd, t, nr_cpus);
 	}
-
-	/* Reset context switch counters for next interval */
-	if (csw_ok)
-		zero_csw(csw_fd, nr_cpus);
 
 	fflush(stdout);
 }

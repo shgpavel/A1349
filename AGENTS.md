@@ -42,7 +42,7 @@ Each per-impl `Makefile` re-execs itself inside `./build/` via `KBUILD_OUTPUT` +
 ## Benchmarks
 
 ```
-make benchmarks BENCH_DURATION=60 BENCH_INTERVAL=1
+make benchmarks BENCH_INTERVAL=1
 ```
 
 Runs `benchmarks/run_suite.py` across default/s3/s3+/LAVD, each with warmup + cooldown. Requires `../scx` sibling checkout for `scx_lavd` (override via `SCX_DIR=` / `SCX_LAVD_BIN=`). `run_suite.py` calls `collect.py` (drives the `sched_latency` BPF tool; needs root) and `visualize.py`. Outputs land in `results/` and `plots/`.

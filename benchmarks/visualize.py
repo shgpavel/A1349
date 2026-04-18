@@ -15,8 +15,9 @@ import json
 import sys
 from pathlib import Path
 
-import pandas as pd
 import matplotlib
+import pandas as pd
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -26,23 +27,23 @@ import matplotlib.pyplot as plt
 
 SCHED_COLORS = {
     "default": "#1f77b4",  # blue
-    "s3":      "#ff7f0e",  # orange
-    "s3+":     "#2ca02c",  # green
-    "LAVD":    "#8c564b",  # brown
-    "s4":      "#d62728",  # red
+    "s3": "#ff7f0e",  # orange
+    "s3+": "#2ca02c",  # green
+    "LAVD": "#8c564b",  # brown
+    "s4": "#d62728",  # red
 }
 
 SCHED_ORDER = ["default", "s3", "s3+", "LAVD", "s4"]
 LATENCY_PERCENTILES = [("avg", "-"), ("p99", ":")]
 LATENCY_PLOTS = [
-    ("sched_delay",  "Schedule Delay",     "latency_sched_delay"),
-    ("runqueue",     "Runqueue Latency",   "latency_runqueue"),
-    ("wakeup",       "Wakeup Latency",     "latency_wakeup"),
-    ("preemption",   "Preemption Latency", "latency_preemption"),
-    ("idle_wakeup",  "Idle CPU Wakeup",    "latency_idle_wakeup"),
-    ("migration",    "Migration Latency",  "latency_migration"),
-    ("slice",        "Slice Duration",     "latency_slice"),
-    ("sleep",        "Sleep Duration",     "latency_sleep"),
+    ("sched_delay", "Schedule Delay", "latency_sched_delay"),
+    ("runqueue", "Runqueue Latency", "latency_runqueue"),
+    ("wakeup", "Wakeup Latency", "latency_wakeup"),
+    ("preemption", "Preemption Latency", "latency_preemption"),
+    ("idle_wakeup", "Idle CPU Wakeup", "latency_idle_wakeup"),
+    ("migration", "Migration Latency", "latency_migration"),
+    ("slice", "Slice Duration", "latency_slice"),
+    ("sleep", "Sleep Duration", "latency_sleep"),
 ]
 THROUGHPUT_PLOTS = [
     (
@@ -59,7 +60,37 @@ THROUGHPUT_PLOTS = [
         "sysbench (events/s)",
         False,
     ),
+    (
+        "schbench_wakeup_p99_0_usec",
+        "schbench_wakeup_p99",
+        "schbench Wakeup Latency p99",
+        "wakeup p99 (usec)",
+        True,
+    ),
+    (
+        "schbench_wakeup_p99_9_usec",
+        "schbench_wakeup_p99_9",
+        "schbench Wakeup Latency p99.9",
+        "wakeup p99.9 (usec)",
+        True,
+    ),
+    (
+        "schbench_request_p99_0_usec",
+        "schbench_request_p99",
+        "schbench Request Latency p99",
+        "request p99 (usec)",
+        True,
+    ),
+    (
+        "schbench_avg_rps",
+        "schbench_avg_rps",
+        "schbench Average RPS",
+        "avg RPS",
+        False,
+    ),
 ]
+
+
 def color_for(sched):
     return SCHED_COLORS.get(sched, "#7f7f7f")
 
@@ -130,6 +161,17 @@ def iter_scheduler_series(data, scheds, column):
             yield sched, sdf, vals
 
 
+def ci_bounds(sdf, column):
+    """Return (lo, hi) series for column if CI aux cols present, else (None, None)."""
+    lo = metric_series(sdf, f"{column}_ci_lo")
+    hi = metric_series(sdf, f"{column}_ci_hi")
+    if lo is None or hi is None:
+        return None, None
+    if not lo.notna().any() or not hi.notna().any():
+        return None, None
+    return lo, hi
+
+
 def scheduler_metric_means(data, scheds, column):
     for sched, _, vals in iter_scheduler_series(data, scheds, column):
         yield sched, vals.dropna().mean()
@@ -166,6 +208,16 @@ def plot_line_metric(
             label=sched,
             alpha=0.8,
         )
+        lo, hi = ci_bounds(sdf, column)
+        if lo is not None:
+            ax.fill_between(
+                sdf["elapsed_s"],
+                lo,
+                hi,
+                color=color_for(sched),
+                alpha=0.15,
+                linewidth=0,
+            )
         has_data = True
 
     if log_scale:
@@ -215,7 +267,7 @@ def plot_bar_metric(
 
     if values:
         bars = ax.bar(labels, values, color=colors, alpha=0.8, edgecolor="black")
-        for bar, val in zip(bars, values):
+        for bar, val in zip(bars, values, strict=True):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
                 bar.get_height(),
@@ -240,38 +292,69 @@ def plot_bar_metric(
 # Data loading
 # ---------------------------------------------------------------------------
 
+
+def _rename_aggregate(df, sched):
+    """Collapse _mean cols -> base name; keep _ci_lo/_ci_hi; drop _std.
+
+    Aggregate CSVs have columns like sched_delay_avg_ns_mean / _std / _ci_lo /
+    _ci_hi for every numeric base column. Plots operate on base names, so
+    rename _mean -> base while preserving the CI aux columns alongside.
+    """
+    rename = {}
+    for c in df.columns:
+        if c.endswith("_mean"):
+            base = c[: -len("_mean")]
+            rename[c] = base
+    df = df.rename(columns=rename)
+    df["scheduler"] = sched
+    return df
+
+
 def load_data(csv_files):
-    """Load and concatenate CSV files, return DataFrame grouped by scheduler."""
+    """Load CSVs (raw or aggregate). Aggregate detected by *_aggregate.csv name."""
     frames = []
     for f in csv_files:
         try:
             df = pd.read_csv(f)
-            frames.append(df)
         except Exception as e:
             print(f"Warning: skipping {f}: {e}", file=sys.stderr)
+            continue
+        stem = Path(f).stem
+        if stem.endswith("_aggregate"):
+            sched = stem[: -len("_aggregate")]
+            df = _rename_aggregate(df, sched)
+        frames.append(df)
 
     if not frames:
         print("Error: no valid CSV files loaded", file=sys.stderr)
         sys.exit(1)
 
     data = pd.concat(frames, ignore_index=True)
-
-    # Convert elapsed_s to float
     if "elapsed_s" in data.columns:
         data["elapsed_s"] = pd.to_numeric(data["elapsed_s"], errors="coerce")
-
     return data
 
 
 def load_metadata(csv_files):
-    """Load metadata JSON files adjacent to CSV files."""
+    """Load metadata JSON files adjacent to CSV files.
+
+    Two modes:
+      - Raw mode: per-CSV sibling <name>.meta.json (single-run).
+      - Aggregate mode: oneshot_summary.json in same dir with per-sched stats.
+        Synthesized into the same shape as raw meta so plotters keep working,
+        with added ci_lo/ci_hi for error bars.
+    """
     meta = {}
+    summary_dirs = set()
+
     for csv_path in csv_files:
         p = Path(csv_path)
-        # Try matching meta file: same stem with .meta.json
+        # Aggregate CSV: look for oneshot_summary.json once per dir
+        if p.stem.endswith("_aggregate"):
+            summary_dirs.add(p.parent)
+            continue
         meta_path = p.with_suffix("").with_suffix(".meta.json")
         if not meta_path.exists():
-            # Try alternative: replace .csv with .meta.json
             meta_path = p.parent / (p.stem + ".meta.json")
         if meta_path.exists():
             try:
@@ -281,24 +364,42 @@ def load_metadata(csv_files):
                 meta[sched] = m
             except (OSError, json.JSONDecodeError):
                 pass
+
+    for d in summary_dirs:
+        sp = d / "oneshot_summary.json"
+        if not sp.exists():
+            continue
+        try:
+            with open(sp) as f:
+                summary = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for sched, per_key in summary.items():
+            entry = meta.setdefault(sched, {"scheduler": sched})
+            oneshot = entry.setdefault("oneshot", {})
+            ci = entry.setdefault("oneshot_ci", {})
+            for k, stats in per_key.items():
+                if stats.get("mean") is not None:
+                    oneshot[k] = stats["mean"]
+                    ci[k] = (stats.get("ci_lo"), stats.get("ci_hi"))
+
     return meta
 
 
 def schedulers_in(data):
     """Return scheduler names in display order."""
     present = set(data["scheduler"].unique())
-    return [s for s in SCHED_ORDER if s in present] + sorted(
-        present - set(SCHED_ORDER)
-    )
+    return [s for s in SCHED_ORDER if s in present] + sorted(present - set(SCHED_ORDER))
 
 
 # ---------------------------------------------------------------------------
 # Plot 1: Latency time series
 # ---------------------------------------------------------------------------
 
+
 def plot_latency_timeseries(data, scheds, output_dir):
     for prefix, title, name in LATENCY_PLOTS:
-        for pct, linestyle in LATENCY_PERCENTILES:
+        for pct, _linestyle in LATENCY_PERCENTILES:
             col = f"{prefix}_{pct}_ns"
             plot_name = f"{name}_{pct}"
             if not require_metric_comparison(data, scheds, col, plot_name):
@@ -318,6 +419,16 @@ def plot_latency_timeseries(data, scheds, output_dir):
                     label=sched,
                     alpha=0.8,
                 )
+                lo, hi = ci_bounds(sdf, col)
+                if lo is not None:
+                    ax.fill_between(
+                        sdf["elapsed_s"],
+                        lo,
+                        hi,
+                        color=color_for(sched),
+                        alpha=0.15,
+                        linewidth=0,
+                    )
                 has_data = True
 
             ax.set_title(f"{title} {pct.upper()} Over Time")
@@ -337,6 +448,7 @@ def plot_latency_timeseries(data, scheds, output_dir):
 # Plot 2: CPU utilization over time
 # ---------------------------------------------------------------------------
 
+
 def plot_cpu_util(data, scheds, output_dir):
     plot_line_metric(
         data,
@@ -355,6 +467,7 @@ def plot_cpu_util(data, scheds, output_dir):
 # Plot 3: Context switch rate over time
 # ---------------------------------------------------------------------------
 
+
 def plot_ctx_switches(data, scheds, output_dir):
     plot_line_metric(
         data,
@@ -371,6 +484,7 @@ def plot_ctx_switches(data, scheds, output_dir):
 # ---------------------------------------------------------------------------
 # Plot 4: Power consumption over time
 # ---------------------------------------------------------------------------
+
 
 def plot_power(data, scheds, output_dir):
     col = "power_watts"
@@ -392,6 +506,7 @@ def plot_power(data, scheds, output_dir):
 # ---------------------------------------------------------------------------
 # Plot 5: Throughput comparison
 # ---------------------------------------------------------------------------
+
 
 def plot_throughput(data, scheds, output_dir, metadata=None):
     # Plot from time-series CSV if columns present (legacy support)
@@ -417,12 +532,23 @@ def plot_throughput(data, scheds, output_dir, metadata=None):
         values = []
         labels = []
         colors = []
+        err_lo = []
+        err_hi = []
         for sched in scheds:
-            val = metadata.get(sched, {}).get("oneshot", {}).get(col)
-            if val is not None:
-                values.append(val)
-                labels.append(sched)
-                colors.append(color_for(sched))
+            entry = metadata.get(sched, {})
+            val = entry.get("oneshot", {}).get(col)
+            if val is None:
+                continue
+            values.append(val)
+            labels.append(sched)
+            colors.append(color_for(sched))
+            ci = entry.get("oneshot_ci", {}).get(col)
+            if ci and ci[0] is not None and ci[1] is not None:
+                err_lo.append(val - ci[0])
+                err_hi.append(ci[1] - val)
+            else:
+                err_lo.append(0)
+                err_hi.append(0)
 
         if len(values) < 2:
             continue
@@ -432,13 +558,25 @@ def plot_throughput(data, scheds, output_dir, metadata=None):
         note = " (lower is better)" if lower_better else " (higher is better)"
         ax.set_ylabel(ylabel + note)
 
-        bars = ax.bar(labels, values, color=colors, alpha=0.8, edgecolor="black")
-        for bar, val in zip(bars, values):
+        yerr = [err_lo, err_hi] if any(err_lo) or any(err_hi) else None
+        bars = ax.bar(
+            labels,
+            values,
+            color=colors,
+            alpha=0.8,
+            edgecolor="black",
+            yerr=yerr,
+            capsize=4,
+            error_kw={"elinewidth": 1},
+        )
+        for bar, val in zip(bars, values, strict=True):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
                 bar.get_height(),
                 f"{val:.2f}",
-                ha="center", va="bottom", fontsize=7,
+                ha="center",
+                va="bottom",
+                fontsize=7,
             )
 
         # Add top margin so labels don't clip
@@ -455,25 +593,25 @@ def plot_throughput(data, scheds, output_dir, metadata=None):
 # ---------------------------------------------------------------------------
 
 SUMMARY_METRICS = [
-    ("cpu_util_pct",          "CPU Utilization (%)",      False),
-    ("ctx_switches_per_sec",  "Context Switches/s",       None),
-    ("power_watts",           "Power (W)",                True),
-    ("sched_delay_avg_ns",    "Sched Delay avg (ns)",     True),
-    ("sched_delay_p99_ns",    "Sched Delay p99 (ns)",     True),
-    ("runqueue_avg_ns",       "Runqueue avg (ns)",        True),
-    ("runqueue_p99_ns",       "Runqueue p99 (ns)",        True),
-    ("wakeup_avg_ns",         "Wakeup avg (ns)",          True),
-    ("wakeup_p99_ns",         "Wakeup p99 (ns)",          True),
-    ("preemption_avg_ns",     "Preemption avg (ns)",      True),
-    ("preemption_p99_ns",     "Preemption p99 (ns)",      True),
-    ("idle_wakeup_avg_ns",    "Idle Wakeup avg (ns)",     True),
-    ("idle_wakeup_p99_ns",    "Idle Wakeup p99 (ns)",     True),
-    ("migration_avg_ns",      "Migration avg (ns)",       True),
-    ("migration_p99_ns",      "Migration p99 (ns)",       True),
-    ("slice_avg_ns",          "Slice Duration avg (ns)",  None),
-    ("slice_p99_ns",          "Slice Duration p99 (ns)",  None),
-    ("sleep_avg_ns",          "Sleep Duration avg (ns)",  None),
-    ("sleep_p99_ns",          "Sleep Duration p99 (ns)",  None),
+    ("cpu_util_pct", "CPU Utilization (%)", False),
+    ("ctx_switches_per_sec", "Context Switches/s", None),
+    ("power_watts", "Power (W)", True),
+    ("sched_delay_avg_ns", "Sched Delay avg (ns)", True),
+    ("sched_delay_p99_ns", "Sched Delay p99 (ns)", True),
+    ("runqueue_avg_ns", "Runqueue avg (ns)", True),
+    ("runqueue_p99_ns", "Runqueue p99 (ns)", True),
+    ("wakeup_avg_ns", "Wakeup avg (ns)", True),
+    ("wakeup_p99_ns", "Wakeup p99 (ns)", True),
+    ("preemption_avg_ns", "Preemption avg (ns)", True),
+    ("preemption_p99_ns", "Preemption p99 (ns)", True),
+    ("idle_wakeup_avg_ns", "Idle Wakeup avg (ns)", True),
+    ("idle_wakeup_p99_ns", "Idle Wakeup p99 (ns)", True),
+    ("migration_avg_ns", "Migration avg (ns)", True),
+    ("migration_p99_ns", "Migration p99 (ns)", True),
+    ("slice_avg_ns", "Slice Duration avg (ns)", None),
+    ("slice_p99_ns", "Slice Duration p99 (ns)", None),
+    ("sleep_avg_ns", "Sleep Duration avg (ns)", None),
+    ("sleep_p99_ns", "Sleep Duration p99 (ns)", None),
 ]
 
 
@@ -488,6 +626,10 @@ def write_summary(data, scheds, metadata, output_dir):
     oneshot_metrics = [
         ("hackbench_time_sec", "Hackbench (s)", True),
         ("sysbench_events_per_sec", "Sysbench (ev/s)", False),
+        ("schbench_wakeup_p99_0_usec", "schbench wakeup p99 (us)", True),
+        ("schbench_wakeup_p99_9_usec", "schbench wakeup p99.9 (us)", True),
+        ("schbench_request_p99_0_usec", "schbench request p99 (us)", True),
+        ("schbench_avg_rps", "schbench avg RPS", False),
     ]
 
     # Build table rows: each row = [metric_label, val_sched1, val_sched2, ...]
@@ -495,7 +637,7 @@ def write_summary(data, scheds, metadata, output_dir):
     table_rows = []
 
     # Time-series metrics
-    for col, label, lower_better in SUMMARY_METRICS:
+    for col, label, _lower_better in SUMMARY_METRICS:
         if col not in data.columns:
             continue
         vals_by_sched = {}
@@ -526,11 +668,8 @@ def write_summary(data, scheds, metadata, output_dir):
         table_rows.append(row)
 
     # One-shot metrics from metadata
-    for m_key, label, lower_better in oneshot_metrics:
-        has_data = any(
-            m_key in metadata.get(s, {}).get("oneshot", {})
-            for s in scheds
-        )
+    for m_key, label, _lower_better in oneshot_metrics:
+        has_data = any(m_key in metadata.get(s, {}).get("oneshot", {}) for s in scheds)
         if not has_data:
             continue
 
@@ -585,6 +724,7 @@ def write_summary(data, scheds, metadata, output_dir):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def save(fig, output_dir, name):
     path = output_dir / f"{name}.pdf"
     fig.savefig(path, bbox_inches="tight")
@@ -596,25 +736,20 @@ def save(fig, output_dir, name):
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Visualize scheduler benchmark results"
+    parser = argparse.ArgumentParser(description="Visualize scheduler benchmark results")
+    parser.add_argument("csv_files", nargs="+", help="CSV files from collect.py")
+    parser.add_argument(
+        "--output", default="plots", help="Output directory for plots (default: plots/)"
     )
     parser.add_argument(
-        "csv_files", nargs="+",
-        help="CSV files from collect.py"
+        "--schedulers", nargs="+", default=None, help="Explicit scheduler order to compare"
     )
     parser.add_argument(
-        "--output", default="plots",
-        help="Output directory for plots (default: plots/)"
-    )
-    parser.add_argument(
-        "--schedulers", nargs="+", default=None,
-        help="Explicit scheduler order to compare"
-    )
-    parser.add_argument(
-        "--require-schedulers", action="store_true",
-        help="Fail if any explicitly requested scheduler is missing from the input CSVs"
+        "--require-schedulers",
+        action="store_true",
+        help="Fail if any explicitly requested scheduler is missing from the input CSVs",
     )
 
     args = parser.parse_args()

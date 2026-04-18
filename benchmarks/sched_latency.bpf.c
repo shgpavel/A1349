@@ -36,7 +36,7 @@ char _license[] SEC("license") = "GPL";
 #define MAX_CPUS      512
 #define HIST_BUCKETS  32   /* log2 buckets: 0=<1ns .. 31=~2s */
 
-enum latency_type {
+enum sched_latency_type {
 	LAT_SCHED_DELAY  = 0,  /* wakeup → running */
 	LAT_RUNQUEUE     = 1,  /* enqueue → running */
 	LAT_WAKEUP       = 2,  /* wakeup → enqueue */
@@ -327,13 +327,13 @@ int BPF_PROG(handle_sched_switch,
 
 /*
  * Common enqueue logic shared by both CFS and sched_ext hooks.
- * Records enqueue timestamp, enqueue CPU, and measures wakeup latency.
+ * Records enqueue timestamp, enqueue CPU (target rq), measures wakeup latency.
  *
  * Only called for ENQUEUE_WAKEUP events to avoid spurious measurements
  * from re-enqueues (migration, priority changes, cgroup moves).
  */
 static __always_inline void
-handle_enqueue(struct task_struct *p)
+handle_enqueue(struct rq *rq, struct task_struct *p)
 {
 	if (filter_task(p))
 		return;
@@ -352,7 +352,8 @@ handle_enqueue(struct task_struct *p)
 	}
 
 	ts->enqueue_ts  = now;
-	ts->enqueue_cpu = bpf_get_smp_processor_id();
+	/* Target rq CPU, not caller CPU. Caller may enqueue on remote rq. */
+	ts->enqueue_cpu = BPF_CORE_READ(rq, cpu);
 }
 
 /*
@@ -371,6 +372,6 @@ int BPF_PROG(handle_enqueue_task, struct rq *rq, struct task_struct *p,
 	if (!(flags & ENQUEUE_WAKEUP))
 		return 0;
 
-	handle_enqueue(p);
+	handle_enqueue(rq, p);
 	return 0;
 }

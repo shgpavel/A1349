@@ -1,0 +1,48 @@
+[project]
+name = "a1349-benchmarks"
+version = "0.1.0"
+description = "Scheduler benchmark suite: collection, aggregation, plotting"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function call in default arg
+    "SIM115", # long-lived file handles kept as attributes
+    "SIM113", # enumerate() vs manual counter
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

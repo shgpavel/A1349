@@ -15,16 +15,16 @@ import json
 import sys
 from pathlib import Path
 
-import pandas as pd
 import matplotlib
+import pandas as pd
+
 matplotlib.use("Agg")
 matplotlib.rcParams["text.usetex"] = True
 matplotlib.rcParams["font.family"] = "serif"
 matplotlib.rcParams["ps.fonttype"] = 42
 matplotlib.rcParams["pdf.fonttype"] = 42
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-import numpy as np
+import matplotlib.gridspec as gridspec  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Reuse core helpers from visualize.py
@@ -32,10 +32,10 @@ import numpy as np
 
 SCHED_COLORS = {
     "default": "#404040",
-    "s3":      "#A0A0A0",
-    "s3+":     "#A0A0A0",
-    "LAVD":    "#000000",
-    "s4":      "#707070",
+    "s3": "#A0A0A0",
+    "s3+": "#A0A0A0",
+    "LAVD": "#000000",
+    "s4": "#707070",
 }
 
 # Theme colors
@@ -45,10 +45,10 @@ ACCENT_COLOR = "#000000"
 GRID_COLOR = "#CCCCCC"
 SCHED_LABELS = {
     "default": "EEVDF",
-    "s3":      r"sched\_ext EEVDF",
-    "s3+":     r"sched\_ext EEVDF",
-    "LAVD":    "LAVD",
-    "s4":      "S4",
+    "s3": r"sched\_ext EEVDF",
+    "s3+": r"sched\_ext EEVDF",
+    "LAVD": "LAVD",
+    "s4": "S4",
 }
 SCHED_ORDER = ["default", "s3", "s3+", "LAVD", "s4"]
 
@@ -96,9 +96,7 @@ def load_metadata(csv_files):
 
 def schedulers_in(data):
     present = set(data["scheduler"].unique())
-    return [s for s in SCHED_ORDER if s in present] + sorted(
-        present - set(SCHED_ORDER)
-    )
+    return [s for s in SCHED_ORDER if s in present] + sorted(present - set(SCHED_ORDER))
 
 
 def metric_series(frame, column):
@@ -113,13 +111,13 @@ def metric_series(frame, column):
 
 # Time-series panels: (column, title, ylabel)
 TIMESERIES_PANELS = [
-    ("sched_delay_p99_ns",  "Schedule Delay (p99)",  "Latency (ns)"),
+    ("sched_delay_p99_ns", "Schedule Delay (p99)", "Latency (ns)"),
 ]
 
 # Bar panels: (metadata_key, title, ylabel, lower_is_better)
 BAR_PANELS = [
-    ("hackbench_time_sec",      "Hackbench",    "Time (s)",      True),
-    ("sysbench_events_per_sec", "Sysbench",     "Events/s",      False),
+    ("hackbench_time_sec", "Hackbench", "Time (s)", True),
+    ("sysbench_events_per_sec", "Sysbench", "Events/s", False),
 ]
 
 
@@ -146,7 +144,8 @@ def plot_timeseries_panel(ax, data, scheds, column, title, ylabel):
         if vals is None or not vals.notna().any():
             continue
         ax.plot(
-            sdf["elapsed_s"], vals,
+            sdf["elapsed_s"],
+            vals,
             color=color_for(sched),
             label=label_for(sched),
             alpha=0.85,
@@ -186,27 +185,40 @@ def plot_bar_panel(ax, data, scheds, metadata, col_key, title, ylabel, lower_bet
                 colors.append(color_for(sched))
 
     if not values:
-        ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
-                ha="center", va="center", fontsize=9, color="gray", style="italic")
+        ax.text(
+            0.5,
+            0.5,
+            "No data",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=9,
+            color="gray",
+            style="italic",
+        )
         return
 
-    bars = ax.bar(labels, values, color=colors, alpha=0.85, edgecolor=ACCENT_COLOR,
-                  linewidth=0.5, width=0.6)
+    bars = ax.bar(
+        labels, values, color=colors, alpha=0.85, edgecolor=ACCENT_COLOR, linewidth=0.5, width=0.6
+    )
 
     # Value annotations
-    for bar, val in zip(bars, values):
+    for bar, val in zip(bars, values, strict=True):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             bar.get_height(),
             f"{val:.2f}",
-            ha="center", va="bottom", fontsize=7, fontweight="bold",
+            ha="center",
+            va="bottom",
+            fontsize=7,
+            fontweight="bold",
             color=TEXT_COLOR,
         )
 
     # Relative % vs baseline
     if len(values) >= 2:
         baseline_val = values[0]
-        for i, (bar, val) in enumerate(zip(bars, values)):
+        for i, (bar, val) in enumerate(zip(bars, values, strict=True)):
             if i == 0 or baseline_val == 0:
                 continue
             pct = (val - baseline_val) / abs(baseline_val) * 100
@@ -215,8 +227,11 @@ def plot_bar_panel(ax, data, scheds, metadata, col_key, title, ylabel, lower_bet
                 bar.get_x() + bar.get_width() / 2,
                 bar.get_height() * 0.5,
                 f"{pct:+.1f}\\%",
-                ha="center", va="center", fontsize=7,
-                color=color, fontweight="bold",
+                ha="center",
+                va="center",
+                fontsize=7,
+                color=color,
+                fontweight="bold",
             )
 
     ymin, ymax = ax.get_ylim()
@@ -228,6 +243,7 @@ def plot_bar_panel(ax, data, scheds, metadata, col_key, title, ylabel, lower_bet
 # ---------------------------------------------------------------------------
 # Main figure assembly
 # ---------------------------------------------------------------------------
+
 
 def generate_combined_figure(data, scheds, metadata, output_path):
     """Build the combined 2×3 figure."""
@@ -278,7 +294,8 @@ def generate_combined_figure(data, scheds, metadata, output_path):
         labels.append(label_for(sched))
 
     fig.legend(
-        handles, labels,
+        handles,
+        labels,
         loc="upper center",
         ncol=len(scheds),
         fontsize=9,
@@ -307,18 +324,14 @@ def generate_combined_figure(data, scheds, metadata, output_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Generate combined summary figure for publication"
-    )
+    parser = argparse.ArgumentParser(description="Generate combined summary figure for publication")
     parser.add_argument("csv_files", nargs="+", help="CSV files from collect.py")
     parser.add_argument(
-        "--output", default="plots/combined.pdf",
-        help="Output file path (default: plots/combined.pdf)"
+        "--output",
+        default="plots/combined.pdf",
+        help="Output file path (default: plots/combined.pdf)",
     )
-    parser.add_argument(
-        "--schedulers", nargs="+", default=None,
-        help="Explicit scheduler order"
-    )
+    parser.add_argument("--schedulers", nargs="+", default=None, help="Explicit scheduler order")
 
     args = parser.parse_args()
     data = load_data(args.csv_files)
