@@ -39,6 +39,8 @@ endif
 
 ifeq ($(skip-makefile),)
 
+.DEFAULT_GOAL := all
+
 export BPF_CLANG ?= clang
 export BPFTOOL ?= bpftool
 
