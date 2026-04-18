@@ -111,6 +111,17 @@
         bottom=2mm
 }
 
+\newtcolorbox{shadowbox3}{
+        enhanced,
+        colback=NearWhite,
+        colframe=MainRed,
+        coltext=NearBlack,
+        arc=6pt,
+        boxrule=0.6pt,
+        left=4mm, right=4mm, top=2mm, bottom=2mm,
+        halign=center
+}
+
 \setmainfont{Iosevka NFM}
 \setmonofont{Iosevka NFM}
 \setsansfont{Iosevka NFM}
@@ -125,13 +136,16 @@
 
 \begin{frame}[plain]
         \begin{center}
+                \begin{shadowbox3}
                 {\scriptsize
                         Санкт-Петербургский государственный
-                        университет \\[0.1em]
+                        университет \\ [0.1em]
                         Факультет прикладной математики~-- процессов
-                        управления \\[-0.4em]
-                        Прикладная математика, фундаментальная информатика и
-                        программирование}
+                        управления \\ [-0.4em]
+                        ООП СВ.5005.2022 Прикладная математика, фундаментальная информатика и
+                        программирование
+                }
+                \end{shadowbox3}
         \end{center}
 
         \vspace{0.3em}
@@ -142,21 +156,12 @@
                 {\small\color{MainRed}\textbf{Шаго Павел Евгеньевич}}
 
                 \vspace{0.2em}
-                \begin{tcolorbox}[
-                                enhanced,
-                                colback=NearWhite,
-                                colframe=MainRed,
-                                coltext=NearBlack,
-                                arc=6pt,
-                                boxrule=0.6pt,
-                                left=4mm, right=4mm, top=2mm, bottom=2mm,
-                                halign=center
-                        ]
+                \begin{shadowbox3}
                         {\bfseries
                                 Математическое моделирование и
                                 реализация планировщика
                                 процессов для гетерогенных процессорных архитектур}
-                \end{tcolorbox}
+                \end{shadowbox3}
 
                 \vspace{0.1em}
                 {\small\itshape Бакалаврская работа}
