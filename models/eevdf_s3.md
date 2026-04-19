@@ -260,7 +260,103 @@ token-bucket budget. Uses EEVDF's virtual-time intuition for tie-breaking only.
 
 ---
 
-## 10. References
+## 10. Implementation Mapping — Model Concepts to sched_ext
+
+This section maps EEVDF theory to `impl/s3` (`scx_eevdf.bpf.c`) and documents
+where implementation shortcuts are safe and where they are not.
+
+### 10.1 State variables
+
+| Model symbol | Implementation | Notes |
+|---|---|---|
+| `V(t)` | `eevdf_ctx.vtime_now` | Shared, scaled by `SCALE = 1000` |
+| `Σw` | `eevdf_ctx.total_weight` | Sum over `enable`d tasks |
+| `ve^(k)` | `task_ctx.ve` | Per-task eligible time |
+| `vd^(k)` | `task_ctx.vd`; DSQ insert key | DSQ ordered by `vd` |
+| `r^(k)` | `SCX_SLICE_DFL` | Fixed quantum; all requests same size |
+| `w_i` | `p->scx.weight` | Set by CFS nice → weight table |
+| `u^(k)` | `SCX_SLICE_DFL - p->scx.slice` | Consumed = allocated − remaining |
+
+### 10.2 Callback mapping
+
+| sched_ext callback | EEVDF operation | Equations |
+|---|---|---|
+| `eevdf_enable` | Join: `ve = V(t)`, `vd = ve + q/w` | Eq. 19 (zero-lag joiner: V unchanged) |
+| `eevdf_disable` | Leave: `V += lag / Σw_after` | Eq. 18 |
+| `eevdf_set_weight` | Reweight: `V += lag/(Σw−w_old) − lag/(Σw−w_old+w_new)` | Eq. 20 |
+| `eevdf_enqueue` | New request: compute `ve`, `vd`; insert into DSQ by `vd` | Eqs. 8, 12; Thm. 1 lag clamp |
+| `eevdf_dispatch` | EEVDF selection: earliest `vd` with `ve ≤ V(now)` | §4 two-stage rule |
+| `eevdf_stopping` | Partial-use recurrence: `ve += u/w`; advance `V += u/Σw` | Eqs. 12, 5 |
+
+### 10.3 Performance trade-offs
+
+The model is agnostic to implementation cost. This section records where the
+implementation deviates from the naive model mapping for performance, and when
+those deviations are safe.
+
+#### Idle CPU fast-path (`select_cpu`)
+
+**What**: when `scx_bpf_select_cpu_dfl` finds an idle CPU and the woken task is
+eligible (`tctx->ve ≤ V(now)`), the task is direct-dispatched to
+`SCX_DSQ_LOCAL`, bypassing `SHARED_DSQ` and the `dispatch` eligibility scan.
+
+**Why safe**: on an idle CPU there is no ordering decision to make — no other
+runnable task competes. Eligibility is checked explicitly, so EEVDF invariants
+hold. A sleeping task almost always has `ve ≤ V` (it was idle while V advanced).
+
+**Why important**: removes a round-trip through `SHARED_DSQ` and the O(n)
+`bpf_for_each` iterator on the hot wakeup path. Without this, every wakeup pays
+iterator setup + task-storage lookup overhead even when the answer is trivially
+"run immediately."
+
+**When NOT to skip**: if `tctx->ve > V(now)` (over-served task woke early),
+correctness requires the task enter `SHARED_DSQ` so dispatch can defer it until
+eligible. The fast-path guard enforces this.
+
+#### Dispatch scan order
+
+**What**: `eevdf_dispatch` iterates `SHARED_DSQ` in `vd` order, picks first
+task with `ve ≤ V(now)` (Stat: `PICK_ELIG`). Falls back to head-of-queue if no
+eligible task found (Stat: `PICK_FB`).
+
+**Cost**: O(n) in the worst case (all head tasks ineligible). For homogeneous
+equal-weight workloads the head is almost always eligible, so cost is O(1) in
+practice plus iterator overhead per dispatch.
+
+**Alternative considered**: plain `scx_bpf_dsq_move_to_local` is O(1) but grabs
+the head unconditionally, which can violate eligibility for heterogeneous weights
+or bursty tasks with large negative lag.
+
+#### V(t) advancement and atomic contention
+
+**What**: `stopping` does `__sync_fetch_and_add(&gdata->vtime_now, dv)` where
+`dv = consumed * SCALE / Σw`.
+
+**Cost**: all CPUs write the same cacheline on every preemption. Under N-core
+load this is N-way atomic contention — a scalability bottleneck absent in the
+old code (which advanced V only in `running` via a non-atomic clamp).
+
+**Why kept**: the atomic advance is necessary for V to track real service
+correctly per Eq. 5. A non-atomic write risks lost updates that accumulate into
+V lagging behind reality, breaking eligibility calculations.
+
+**Mitigation (not yet implemented)**: per-CPU shadow V with periodic
+reconciliation, or batching updates. At low core counts the cost is acceptable.
+
+#### Lag clamp in `eevdf_enqueue`
+
+Per Theorem 1, `|lag| < r_max` (here `r_max = q`). The clamp:
+```
+if (v_now > qv && ve + qv < v_now)  ve = v_now - qv;   // floor
+if (ve > v_now + qv)                 ve = v_now + qv;   // ceiling
+```
+prevents long-sleeping tasks from monopolizing the CPU (floor) and
+excessively blocking newly-woken tasks (ceiling). Both sides are needed;
+omitting the ceiling allows an over-served task to block future eligible tasks.
+
+---
+
+## 11. References
 
 - Stoica, Abdel-Wahab. *Earliest Eligible Virtual Deadline First: A Flexible
   and Accurate Mechanism for Proportional Share Resource Allocation.* ODU

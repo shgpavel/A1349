@@ -10,8 +10,8 @@ UEI_DEFINE(uei);
  * Maps models/eevdf.md onto sched_ext:
  *   - Per-task ve (eligible vtime), vd (deadline) in task storage.
  *   - SHARED_DSQ ordered by vd (insert vtime).
- *   - Dispatch iterates vd-ordered DSQ and picks earliest vd with ve <= V(now)
- *     — the two-stage EEVDF selection (eligibility filter + min vd).
+ *   - Dispatch pulls head of vd-ordered DSQ (O(1)); lag clamp in enqueue
+ *     bounds ineligibility to one qv, so head is almost always eligible.
  *   - V(t) advances at rate 1/Σw: on every stopping event, V += consumed/Σw.
  *   - Join/leave/reweight shift V per Eqs. 18–20.
  */
@@ -48,8 +48,6 @@ struct {
 enum {
 	STAT_DIRECT_IDLE = 0,
 	STAT_ENQUEUE     = 1,
-	STAT_PICK_ELIG   = 2,
-	STAT_PICK_FB     = 3,
 	STAT_NR,
 };
 
@@ -101,12 +99,20 @@ BPF_STRUCT_OPS(eevdf_select_cpu,
 {
 	bool is_idle = false;
 	s32  cpu     = scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, &is_idle);
-	/*
-	 * Do NOT direct-dispatch to SCX_DSQ_LOCAL on idle — it would bypass the
-	 * eligibility filter and vd ordering of SHARED_DSQ and violate EEVDF.
-	 * Let eevdf_enqueue place the task on SHARED_DSQ; dispatch will pull it.
-	 */
-	(void)is_idle;
+	if (is_idle) {
+		/*
+		 * Fast path: a sleeping task accumulates positive lag (V advances
+		 * while it waits), so ve <= V(now) almost always holds on wakeup.
+		 * Skip the SHARED_DSQ round-trip when eligible — safe because we
+		 * ARE picking the task (no ordering decision to make on an idle CPU).
+		 */
+		struct eevdf_ctx *gdata = get_ctx();
+		struct task_ctx  *tctx  = get_tctx(p);
+		if (gdata && tctx && tctx->ve <= gdata->vtime_now) {
+			stat_inc(STAT_DIRECT_IDLE);
+			scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, 0);
+		}
+	}
 	return cpu;
 }
 
@@ -144,40 +150,13 @@ BPF_STRUCT_OPS(eevdf_enqueue, struct task_struct *p, u64 enq_flags)
 	tctx->vd    = vd;
 	tctx->on_rq = true;
 
-	/* DSQ ordered by vd; dispatch applies the ve <= V(now) filter. */
 	scx_bpf_dsq_insert_vtime(p, SHARED_DSQ, SCX_SLICE_DFL, vd, enq_flags);
 }
 
 void
 BPF_STRUCT_OPS(eevdf_dispatch, s32 cpu, struct task_struct *prev)
 {
-	struct eevdf_ctx *gdata = get_ctx();
-	if (!gdata)
-		return;
-
-	u64 v_now = gdata->vtime_now;
-	struct task_struct *p;
-
-	bpf_for_each(scx_dsq, p, SHARED_DSQ, 0) {
-		struct task_ctx *tctx = bpf_task_storage_get(&task_data, p, 0, 0);
-		if (!tctx)
-			continue;
-		if (tctx->ve <= v_now) {
-			if (scx_bpf_dsq_move(BPF_FOR_EACH_ITER, p,
-			                     SCX_DSQ_LOCAL, 0)) {
-				stat_inc(STAT_PICK_ELIG);
-				return;
-			}
-		}
-	}
-
-	/*
-	 * No eligible task (or iterator unavailable): fall back to earliest-vd.
-	 * Work-conserving — corollary of Lemmas 1–2 says this path shouldn't
-	 * normally trigger, but the iterator can miss in-flight races.
-	 */
-	if (scx_bpf_dsq_move_to_local(SHARED_DSQ))
-		stat_inc(STAT_PICK_FB);
+	scx_bpf_dsq_move_to_local(SHARED_DSQ);
 }
 
 void

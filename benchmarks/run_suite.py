@@ -24,9 +24,9 @@ DEFAULT_LEVELS = ["light", "moderate", "stress"]
 SCHEDULERS = [
     ("default", None),
     ("s3", "impl/s3/build/scheds/c/scx_eevdf"),
-    ("s3+", "impl/s3+/build/scheds/c/scx_eevdf"),
+    #("s3+", "impl/s3+/build/scheds/c/scx_eevdf"),
     ("LAVD", None),  # filled in from --lavd-bin
-    ("s4", "impl/s4/build/scheds/c/scx_auction"),
+    #("s4", "impl/s4/build/scheds/c/scx_auction"),
 ]
 
 
@@ -213,6 +213,12 @@ def main():
                 print(f"Cooldown {args.cooldown}s...", flush=True)
                 time.sleep(args.cooldown)
 
+            print(
+                f"\n--- [plan {plan_idx}/{len(session_plan)}] "
+                f"[sched {i+1}/{len(order)}] {label} "
+                f"(level={level}, run={run_idx}/{args.runs}) ---",
+                flush=True,
+            )
             out = level_dir / f"run{run_idx:02d}" / label
             collect_one(
                 sys.executable,

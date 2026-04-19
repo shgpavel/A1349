@@ -514,7 +514,7 @@ class SchbenchSource:
     def _sizing(self):
         n = _nproc()
         if self.level == "light":
-            return 1, max(2, n // 2)
+            return 1, max(1, n // 4)
         if self.level == "moderate":
             return 2, n
         if self.level == "stress":
@@ -577,7 +577,7 @@ def workload_profile(level):
     """
     n = _nproc()
     if level == "light":
-        return ["-l", "50000"], 1
+        return ["-l", "10000"], 1
     if level == "moderate":
         return ["-g", "4", "-l", "120000"], 4
     if level == "stress":
@@ -884,7 +884,8 @@ def collect(args):
         for it in range(1, repeats + 1):
             if exit_req[0]:
                 break
-            print(f"\n[iter {it}/{repeats}] workload_level={level}", flush=True)
+            if repeats > 1:
+                print(f"\n[iter {it}/{repeats}] workload_level={level}", flush=True)
             run_result = {"iter": it}
 
             if hackbench.available():
