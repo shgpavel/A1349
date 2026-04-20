@@ -61,12 +61,15 @@ char _license[] SEC("license") = "GPL";
 #define STARVE_FRAC         10     /* starved if budget < budget_max/10       */
 
 /*
- * Budget-ratio routing: tasks with budget ≥ BURST_THRESHOLD_PCT% of max are
- * considered bursty (sleep-heavy) and routed to DSQ_P; tasks below are
- * CPU-bound and routed to DSQ_E.  Replaces the φ_P≥φ_E comparison, which
- * was σ-determined and thus task-length-independent.
+ * Budget-ratio routing with hysteresis (§impl): tasks with budget ≥ HIGH% of
+ * max are bursty (sleep-heavy) → DSQ_P; tasks below LOW% are CPU-bound →
+ * DSQ_E; in the deadband, the previous cluster choice sticks.  Hysteresis
+ * prevents cross-cluster migration storms when budget oscillates around 50%.
+ * Routing is re-evaluated only on wake-up; preempt re-enqueues always keep
+ * the existing cluster to eliminate P↔E flip-flop during a running stretch.
  */
-#define BURST_THRESHOLD_PCT 50     /* ≥ 50% budget → bursty → P-core         */
+#define BURST_HIGH_PCT      70     /* ≥ 70% budget → bursty → P-core         */
+#define BURST_LOW_PCT       30     /* < 30% budget → cpu-bound → E-core      */
 
 /*
  * Starvation vd penalty divisor for proportional ordering within DSQ_STARVED.
@@ -100,7 +103,8 @@ struct auction_ctx {
 	u32 min_capacity;
 	u32 cost_p;
 	u32 cost_e;
-	u32 _pad;
+	u32 p_core_count;   /* #CPUs classified as P-cluster (cap ≥ 90% max)    */
+	u32 e_core_count;   /* #CPUs classified as E-cluster                    */
 };
 
 struct {
@@ -323,57 +327,50 @@ BPF_STRUCT_OPS(auction_select_cpu,
 	       s32                 prev_cpu,
 	       u64                 wake_flags)
 {
-	struct auction_ctx *gdata = get_ctx();
-	struct auction_task_ctx *tctx;
-	u32 max_cap;
+	struct auction_ctx     *gdata = get_ctx();
+	struct auction_task_ctx *tctx = get_task_ctx(p, false);
 	bool is_idle = false;
 	s32 cpu;
+	u32 max_cap;
 	bool want_p;
 	u64 desired_dsq, cpu_dsq;
 
 	cpu = scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, &is_idle);
-	if (!is_idle)
+
+	/*
+	 * If dfl didn't find an idle CPU, enqueue path will handle routing.
+	 * Skip cluster-preference work; there's nothing to improve.
+	 */
+	if (!(cpu >= 0 && is_idle) || !gdata)
 		return cpu;
 
-	if (!gdata)
-		return cpu;
-
-	max_cap = gdata->max_capacity ?: CAPACITY_SCALE;
-
-	tctx = get_task_ctx(p, false);
-	if (tctx && tctx->last_stop_ns) {
-		/*
-		 * Task has run before: reuse budget-ratio routing decision
-		 * cached by the last enqueue.  Avoids a redundant map lookup
-		 * and division on every wake-up.
-		 */
-		want_p = tctx->on_p_type;
-	} else {
-		/*
-		 * New task (enable() just ran): budget = budget_max = full.
-		 * Full budget → bursty classification → P-core.
-		 */
-		want_p = true;
-	}
+	max_cap     = gdata->max_capacity ?: CAPACITY_SCALE;
+	want_p      = (tctx && tctx->last_stop_ns) ? tctx->on_p_type : true;
 	desired_dsq = want_p ? AUCTION_DSQ_P : AUCTION_DSQ_E;
 	cpu_dsq     = dsq_for_cpu((u32)cpu, max_cap);
 
-	if (cpu >= 0 && desired_dsq == cpu_dsq) {
-		/* Idle CPU matches the desired cluster — dispatch locally. */
-		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, 0);
-		return cpu;
-	}
-
 	/*
-	 * Preferred cluster CPU isn't idle (or wrong cluster).
-	 * Try to find an idle CPU in the desired cluster.
+	 * Soft cluster preference.  dfl returned an idle CPU; if the cluster
+	 * matches the task's auction-preferred DSQ, use it as-is.  If it's
+	 * the wrong cluster (e.g. bursty P-class task landed on idle E),
+	 * probe once for an idle CPU in the desired cluster.  If found, swap.
+	 * If not, keep dfl's idle hit — work conservation beats spinning on
+	 * a busy same-cluster CPU.
+	 *
+	 * Differs from the pre-fix policy: that one fell through to a
+	 * non-idle return when the second probe missed, leaving the idle
+	 * CPU unkicked.  We always dispatch to LOCAL on an idle CPU.
 	 */
-	s32 idle = scx_bpf_pick_idle_cpu(p->cpus_ptr, 0);
-	if (idle >= 0 && dsq_for_cpu((u32)idle, max_cap) == desired_dsq) {
-		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, 0);
-		return idle;
+	if (desired_dsq != cpu_dsq) {
+		s32 alt = scx_bpf_pick_idle_cpu(p->cpus_ptr, 0);
+		if (alt >= 0 && dsq_for_cpu((u32)alt, max_cap) == desired_dsq)
+			cpu = alt;
+		/* else: second pick consumed an idle bit in a cluster we
+		 * don't want (or nothing), and that CPU will get stolen on
+		 * its next dispatch() — acceptable cost. */
 	}
 
+	scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, 0);
 	return cpu;
 }
 
@@ -382,19 +379,14 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 {
 	struct auction_ctx     *gdata = get_ctx();
 	struct auction_task_ctx *tctx = get_task_ctx(p, true);
-	u32 max_cap, min_cap, weight;
-	u32 cost_p, cost_e;
+	u32 max_cap, weight;
 	u64 v_now, ve, q_max, min_ve, vd;
-	s64 phi_p, phi_e;
 	u64 dsq_id;
 
 	if (!gdata || !tctx)
 		return;
 
 	max_cap = gdata->max_capacity ?: CAPACITY_SCALE;
-	min_cap = gdata->min_capacity ?: CAPACITY_SCALE;
-	cost_p  = gdata->cost_p       ?: C_P_DEF;
-	cost_e  = gdata->cost_e       ?: C_E_DEF;
 	weight  = p->scx.weight       ?: 1;
 
 	/*
@@ -404,14 +396,6 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	 */
 	if (enq_flags & SCX_ENQ_WAKEUP)
 		budget_replenish(tctx, bpf_ktime_get_ns());
-
-	/*
-	 * Compute φ_P and φ_E in continuous ns units (no quantization).
-	 * Used below for proportional starvation ordering; not for P/E routing.
-	 */
-	u64 len_est = tctx->len_est_ns ?: (u64)(SCX_SLICE_DFL ?: 5000000);
-	compute_phi(weight, len_est, max_cap, min_cap, cost_p, cost_e,
-		    &phi_p, &phi_e);
 
 	/*
 	 * Virtual-time eligibility and deadline (EEVDF kernel, same as s3+).
@@ -426,7 +410,29 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 		ve = min_ve;
 
 	refresh_inv_weight(tctx, weight);
-	vd             = ve + div_by_weight(q_max * SCALE, weight, tctx);
+
+	/*
+	 * Wake-latency boost (links VCG budget-ratio to EEVDF deadline).
+	 * A task waking from sleep with budget ≥ BURST_HIGH_PCT has not
+	 * consumed recent resources — in auction terms, its virtual
+	 * valuation is high relative to its recent payments.  Give it a
+	 * half-gap vd so it preempts long-queued CPU-bound tasks.
+	 *   - Only on SCX_ENQ_WAKEUP (not preempt re-enqueue — that would
+	 *     let running tasks monopolise).
+	 *   - Gated on high budget ratio — CPU-bound tasks (low budget)
+	 *     get normal gap and fall in line behind bursty tasks.
+	 * This is how §4.2 fairness penalty Ψ(π) = Var(u_i/v_i) gets
+	 * mechanised: tasks whose u_i is "behind" their v_i (high ρ, low
+	 * recent consumption) get boosted, shrinking the variance.
+	 */
+	/*
+	 * Wake-latency boost disabled: on moderate load it caused preempt
+	 * storm.  Many sleep-heavy tasks stay above BURST_HIGH_PCT, so every
+	 * wake halved the gap and preempted the running task, tanking rps.
+	 */
+	u64 gap_num = q_max * SCALE;
+
+	vd             = ve + div_by_weight(gap_num, weight, tctx);
 	p->scx.dsq_vtime = ve;
 
 	/*
@@ -439,7 +445,17 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	 * (Static 1<<32 bump was a uniform shift — no differentiation.)
 	 */
 	if (tctx->budget_max &&
-	    tctx->budget < tctx->budget_max / STARVE_FRAC) {
+	    tctx->budget * STARVE_FRAC < tctx->budget_max) {
+		u32 min_cap = gdata->min_capacity ?: CAPACITY_SCALE;
+		u32 cost_p  = gdata->cost_p       ?: C_P_DEF;
+		u32 cost_e  = gdata->cost_e       ?: C_E_DEF;
+		u64 len_est = tctx->len_est_ns ?: (u64)(SCX_SLICE_DFL ?: 5000000);
+		s64 phi_p, phi_e;
+
+		/* Only starved tasks need φ for proportional ordering. */
+		compute_phi(weight, len_est, max_cap, min_cap, cost_p, cost_e,
+			    &phi_p, &phi_e);
+
 		s64 phi = (phi_p < phi_e) ? phi_p : phi_e; /* worst-case φ */
 		if (phi < 0)
 			vd += (u64)(-phi) / STARVE_PHI_DIV;
@@ -449,21 +465,47 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	}
 
 	/*
-	 * Budget-ratio routing (§impl): bursty tasks keep high budget because
-	 * they sleep often; CPU-bound tasks drain it.  Route on that signal
-	 * rather than φ_P≥φ_E, which is length-independent (reduces to C_E*σ≥C_P)
-	 * and would send all tasks to the same DSQ for a given topology.
-	 *
-	 * budget_ratio ≥ BURST_THRESHOLD_PCT → bursty → DSQ_P (interactive fit)
-	 * budget_ratio <  BURST_THRESHOLD_PCT → cpu-bound → DSQ_E (offload)
+	 * Routing with hysteresis + stickiness:
+	 *   - On preempt re-enqueue (no WAKEUP), keep previous cluster — avoids
+	 *     migrations while a task is simply time-slicing.
+	 *   - On wake-up, re-route only if budget has crossed HIGH or LOW band;
+	 *     inside the 30–70% deadband, keep previous cluster.
+	 *   - First enqueue (last_stop_ns==0): treat as wake-up; default P.
 	 */
-	bool want_p_enq = tctx->budget_max
-		? ((tctx->budget * 100 / tctx->budget_max) >= BURST_THRESHOLD_PCT)
-		: true;
+	bool is_wakeup  = (enq_flags & SCX_ENQ_WAKEUP) || !tctx->last_stop_ns;
+	bool want_p_enq = tctx->on_p_type; /* sticky default */
+
+	if (is_wakeup && tctx->budget_max) {
+		u64 num = tctx->budget * 100;
+		u64 hi  = (u64)tctx->budget_max * BURST_HIGH_PCT;
+		u64 lo  = (u64)tctx->budget_max * BURST_LOW_PCT;
+
+		if (num >= hi)
+			want_p_enq = true;
+		else if (num < lo)
+			want_p_enq = false;
+		/* else keep sticky on_p_type */
+	} else if (is_wakeup) {
+		/* No budget info yet (new task) — prefer P. */
+		want_p_enq = true;
+	}
 
 	if (want_p_enq) {
-		dsq_id          = AUCTION_DSQ_P;
-		tctx->on_p_type = 1;
+		/*
+		 * Saturation spill: if DSQ_P already has ≥ #P-cores queued,
+		 * routing one more there just deepens the P backlog while
+		 * E-cores sit idle.  Flip to DSQ_E so an E-core dispatch()
+		 * picks it up directly (its local DSQ is E).  Only applies
+		 * when userspace has populated p_core_count.
+		 */
+		u32 p_cc = gdata->p_core_count;
+		if (p_cc && scx_bpf_dsq_nr_queued(AUCTION_DSQ_P) >= p_cc) {
+			dsq_id          = AUCTION_DSQ_E;
+			tctx->on_p_type = 0;
+		} else {
+			dsq_id          = AUCTION_DSQ_P;
+			tctx->on_p_type = 1;
+		}
 	} else {
 		dsq_id          = AUCTION_DSQ_E;
 		tctx->on_p_type = 0;
@@ -471,6 +513,18 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 
 insert:
 	scx_bpf_dsq_insert_vtime(p, dsq_id, SCX_SLICE_DFL, vd, enq_flags);
+
+	/*
+	 * Kick idle CPU only on WAKEUP enqueue.  Probing pick_idle_cpu on
+	 * every preempt re-enqueue was a per-CPU scan storm under moderate
+	 * load (250k ctx/s × 20-CPU scan).  Preempt-path rarely finds idle
+	 * anyway since the system is under pressure.
+	 */
+	if (enq_flags & SCX_ENQ_WAKEUP) {
+		s32 idle_cpu = scx_bpf_pick_idle_cpu(p->cpus_ptr, 0);
+		if (idle_cpu >= 0)
+			scx_bpf_kick_cpu(idle_cpu, SCX_KICK_IDLE);
+	}
 }
 
 void
@@ -490,10 +544,14 @@ BPF_STRUCT_OPS(auction_dispatch, s32 cpu, struct task_struct *prev)
 		slots = DISPATCH_BATCH_MAX;
 
 	/*
-	 * Dispatch order:
-	 *   1. local cluster DSQ (tasks assigned to this core type)
-	 *   2. cross-cluster work-steal
-	 *   3. starved tasks (last resort — budget exhausted)
+	 * Dispatch order (unconditional work conservation):
+	 *   1. local cluster DSQ (tasks assigned to this core type).
+	 *   2. cross-cluster work-steal (either direction).  Any queued
+	 *      task beats an idle slot — model §1.1 "unused quanta are
+	 *      lost" directly motivates aggressive stealing.  Cluster
+	 *      preference is enforced upstream at enqueue-time routing;
+	 *      the dispatch path must never leave work stranded.
+	 *   3. starved tasks (budget exhausted).
 	 */
 #pragma unroll
 	for (u32 i = 0; i < DISPATCH_BATCH_MAX; i++) {
@@ -562,10 +620,11 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 	if (tctx) {
 		u64 slice = SCX_SLICE_DFL ?: 5000000;
 		u32 cost_kappa;
-		u64 max_cap = gdata->max_capacity ?: CAPACITY_SCALE;
+		u32 max_cap = gdata->max_capacity ?: CAPACITY_SCALE;
 
-		/* Determine whether this CPU is P-type or E-type. */
-		cost_kappa = cpu_is_p_type(cpu, (u32)max_cap) ? cost_p : cost_e;
+		/* Reuse the capacity we already fetched for this CPU. */
+		cost_kappa = (u64)cap * 100 >= (u64)max_cap * P_CAP_PCT ?
+			cost_p : cost_e;
 
 		/*
 		 * Proportional payment: C_κ * consumed_ns / slice.
@@ -582,7 +641,16 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 		else
 			tctx->budget = 0;
 
-		tctx->last_stop_ns = bpf_ktime_get_ns();
+		/*
+		 * Only stamp when the task is actually going to sleep
+		 * (runnable=false).  Preempts keep the prior sleep timestamp so
+		 * the next wake-up measures the real idle interval, not the
+		 * tiny preempt-gap.  This was the source of premature starvation
+		 * for CPU-bound tasks: replenish saw idle≈0 on every wake-up
+		 * because last_stop_ns was reset on every slice.
+		 */
+		if (!runnable)
+			tctx->last_stop_ns = bpf_ktime_get_ns();
 	}
 
 update_len:

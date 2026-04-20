@@ -39,8 +39,11 @@ struct auction_ctx {
 	__u32 min_capacity;
 	__u32 cost_p;
 	__u32 cost_e;
-	__u32 _pad;
+	__u32 p_core_count;
+	__u32 e_core_count;
 };
+
+#define P_CAP_PCT 90
 
 /*
  * Read cpu_capacity for every possible CPU from sysfs.
@@ -63,6 +66,12 @@ refresh_cpu_capacities(struct scx_auction *skel,
 	bool changed  = false;
 
 	int ncpu = libbpf_num_possible_cpus();
+
+	/* Two-pass: first find max_cap so we can classify P vs E on pass 2. */
+	__u32 caps[512] = {0};
+	if (ncpu > 512)
+		ncpu = 512;
+
 	for (int cpu = 0; cpu < ncpu; cpu++) {
 		char path[128];
 		snprintf(path, sizeof(path),
@@ -74,6 +83,7 @@ refresh_cpu_capacities(struct scx_auction *skel,
 			fscanf(f, "%u", &cap);
 			fclose(f);
 		}
+		caps[cpu] = cap;
 
 		__u32 key = (__u32)cpu;
 		__u32 old_cap = 0;
@@ -89,6 +99,15 @@ refresh_cpu_capacities(struct scx_auction *skel,
 			min_cap = cap;
 	}
 
+	/* Classify each CPU into P / E cluster (cap ≥ 90% max → P). */
+	__u32 p_cc = 0, e_cc = 0;
+	for (int cpu = 0; cpu < ncpu; cpu++) {
+		if ((__u64)caps[cpu] * 100 >= (__u64)max_cap * P_CAP_PCT)
+			p_cc++;
+		else
+			e_cc++;
+	}
+
 	if (!max_cap)
 		max_cap = 1024;
 	if (!min_cap)
@@ -101,11 +120,14 @@ refresh_cpu_capacities(struct scx_auction *skel,
 		memset(&ctx, 0, sizeof(ctx));
 
 	if (ctx.max_capacity != max_cap || ctx.min_capacity != min_cap ||
-	    ctx.cost_p != cost_p || ctx.cost_e != cost_e) {
+	    ctx.cost_p != cost_p || ctx.cost_e != cost_e ||
+	    ctx.p_core_count != p_cc || ctx.e_core_count != e_cc) {
 		ctx.max_capacity = max_cap;
 		ctx.min_capacity = min_cap;
 		ctx.cost_p       = cost_p;
 		ctx.cost_e       = cost_e;
+		ctx.p_core_count = p_cc;
+		ctx.e_core_count = e_cc;
 		bpf_map_update_elem(gmap_fd, &gkey, &ctx, BPF_ANY);
 		changed = true;
 	}
@@ -113,8 +135,8 @@ refresh_cpu_capacities(struct scx_auction *skel,
 	if (force_log || changed) {
 		double sigma = (min_cap > 0) ? (double)max_cap / min_cap : 1.0;
 		printf("auction: max_cap=%u min_cap=%u sigma=%.2f "
-		       "cost_p=%u cost_e=%u (%s)%s\n",
-		       max_cap, min_cap, sigma, cost_p, cost_e,
+		       "cost_p=%u cost_e=%u p_cores=%u e_cores=%u (%s)%s\n",
+		       max_cap, min_cap, sigma, cost_p, cost_e, p_cc, e_cc,
 		       (max_cap == min_cap) ? "homogeneous" : "heterogeneous",
 		       changed ? " [updated]" : "");
 	}
@@ -128,8 +150,8 @@ usage(const char *prog)
 	fprintf(stderr,
 		"Usage: %s [-p COST_P] [-e COST_E] [-h]\n"
 		"\n"
-		"  -p COST_P   per-quantum cost on P-core (default 512)\n"
-		"  -e COST_E   per-quantum cost on E-core (default 256)\n"
+		"  -p COST_P   per-quantum cost on P-core (default 1024)\n"
+		"  -e COST_E   per-quantum cost on E-core (default 560)\n"
 		"\n"
 		"VCG auction scheduler for heterogeneous CPUs (s4/A1349).\n"
 		"Reads per-CPU capacity from /sys/.../cpu_capacity and assigns\n"
@@ -147,8 +169,8 @@ main(int argc, char **argv)
 	struct scx_auction *skel;
 	struct bpf_link    *link;
 	int                 opt;
-	__u32               cost_p = 512;
-	__u32               cost_e = 256;
+	__u32               cost_p = 1024;
+	__u32               cost_e = 560;
 	unsigned int        refresh_tick = 0;
 
 	signal(SIGINT,  sigint_handler);
