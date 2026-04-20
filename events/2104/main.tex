@@ -203,35 +203,30 @@
 \begin{frame}{Постановка задачи}
         \begin{columns}[T]
                 \column{0.5\textwidth}
-                \begin{itemize}
-                        \item Современные процессоры всё чаще имеют гетерогенную
-                                компоновку, в которой
-                                производительные P\nobreakdash-ядра дополняются
-                                энергоэффективными E\nobreakdash-ядрами
+                \begin{itemize}\setlength{\itemsep}{0.3em}
+                        \item Современные процессоры все чаще гетерогенны.
+                                Объединяют производительные P\nobreakdash-ядра +
+                                энергоэффективные E\nobreakdash-ядра
 
-                        \item Стандартный планировщик Linux
-                                учитывает типы ядер ограниченно
-                                (через \texttt{sched\_domains}),
-                                поэтому не всегда способен
-                                сбалансировать производительность
-                                и энергопотребление так, как это
-                                задумано архитектурой CPU
+                        \item Linux EEVDF учитывает типы ядер ограниченно,
+                                не балансирует производительность и
+                                энергопотребление так, как задумано
+                                архитектурой CPU
                 \end{itemize}
 
                 \column{0.5\textwidth}
                 \textbf{Цели работы}
-                \begin{enumerate}
-                        \item Формализовать распределение временных слотов
-                                P/E\nobreakdash-ядер
-                                как динамический аукцион Викри (VCG), в котором
-                                задачи конкурируют за вычислительный ресурс
+                \begin{enumerate}\setlength{\itemsep}{0.3em}
+                        \item Формализовать распределение слотов
+                                P/E\nobreakdash-ядер как динамический
+                                аукцион Викри (VCG)
 
-                        \item Реализовать полученный механизм используя
-                                \texttt{sched\_ext} и оценить
-                                его по метрикам на тестах производительности
+                        \item Реализовать механизм используя \texttt{sched\_ext}
+                                и оценить на тестах производительности
                 \end{enumerate}
         \end{columns}
 
+        \vspace{0.3em}
         \begin{shadowbox2}
                 \small Каждое ядро рассматривается как
                 \textbf{истощаемое благо}, неиспользованный квант
@@ -298,7 +293,7 @@
                 \end{itemize}
 
                 \vspace{0.3em}
-                \textbf{Действие} $a^t = (a_{i,P}^t, a_{i,E}^t)_i$
+                \textbf{Действие}  $a^t = (a_{i,P}^t, a_{i,E}^t)_i$
                 при ограничениях:
                 $$a_{i,P}^t + a_{i,E}^t \leq 1, \quad \forall i$$
                 $$\sum_i a_{i,P}^t \leq K_P^t, \quad
@@ -309,7 +304,7 @@
 
                 \vspace{0.2em}
                 Задача $i$ (покупатель):
-                $$r_i(s,a) = v_i \cdot \mathbb{1}[\text{$i$ получила ядро}]$$
+                $$r_i(s,a) = v_i \cdot \mathbb{1}[\text{$i$ завершилась в $t$}]$$
 
                 Планировщик (продавец):
                 $$r_0 = \mu_P\!\!\sum_{k\in\mathcal{P}}\!\mathbb{1}[x_k \geq 1]
@@ -349,8 +344,10 @@
                 \phi_\kappa(\theta_i)\bigr)$$
 
                 \vspace{0.1em}
-                {\footnotesize Задача $i$ платит ровно то, что теряют
-                остальные агенты из-за её присутствия (pivot rule)}
+                {\footnotesize $W(s^t),\,W_{-i}(s^t)$~-- оптимальное
+                социальное благосостояние с~$i$ и без неё. Задача $i$
+                платит ровно то, что теряют остальные агенты из-за её
+                присутствия (pivot rule).}
 
                 \column{0.48\textwidth}
                 \begin{shadowbox}
@@ -451,12 +448,16 @@
         \vspace{0.3em}
         \begin{columns}[T]
                 \column{0.50\textwidth}
+                % TODO(tasks/scx_diagram.md): заменить на схему sched_ext
+                % (DSQ, цикл select_cpu/enqueue/dispatch). Текущая
+                % картинка иллюстрирует eBPF на сетевом стеке.
                 \vspace{0.3em}
                 \centering
                 \includegraphics[width=\linewidth]{../0212/res/libbpf.png}
 
                 \vspace{0.1em}
-                {\tiny \textbf{Рис.~1.} eBPF в сетевой подсистеме}
+                {\tiny \textbf{Рис.~1.} eBPF как общая инфраструктура
+                ядра Linux}
 
                 \column{0.50\textwidth}
                 \textbf{DSQ} (dispatch queue):
@@ -619,16 +620,51 @@
 
 \begin{frame}{Список литературы \& Вопросы}
         \begin{thebibliography}{20}
+                \scriptsize
 
                 \bibitem{leon}
                 Leon~G., Etesami~O.
                 Mechanism Design for Scheduling with Heterogeneous Workers.
-                Advances in Neural Information Processing Systems, 2022
+                NeurIPS, 2022
 
                 \bibitem{sano}
                 Sano~T.
                 Dynamic Mechanism Design for Multi-Period Contracting.
                 Working paper, 2023
+
+                \bibitem{myerson}
+                Myerson~R.~B.
+                Optimal Auction Design.
+                Mathematics of Operations Research, 6(1), 1981, pp.~58--73
+
+                \bibitem{stoica}
+                Stoica~I., Abdel-Wahab~H.
+                Earliest Eligible Virtual Deadline First: A Flexible and
+                Accurate Mechanism for Proportional Share Resource Allocation.
+                Old Dominion University, 1996
+
+                \bibitem{schedext_arxiv}
+                Agrawal~A., Banerjee~S., Barford~P. et~al.
+                sched\_ext: A BPF-extensible Linux Scheduler.
+                arXiv:2408.01997, 2024
+
+                \bibitem{ghost}
+                Humphries~J.\,T., Natu~N., Chaugule~A. et~al.
+                ghOSt: Fast \& Flexible User-Space Delegation of
+                Linux Scheduling.
+                ACM SOSP, 2021
+
+                \bibitem{pie}
+                Van~Craeynest~K., Jaleel~A., Eeckhout~L. et~al.
+                Scheduling Heterogeneous Multi-Cores through
+                Performance Impact Estimation (PIE).
+                ISCA, 2012, pp.~213--224
+
+                \bibitem{galin}
+                Galin~M., Hedblom~A.
+                Linux Kernel Scheduler Evaluation for Performance-Critical
+                Telecom Workloads.
+                Linköping University, 2025
 
                 \bibitem{sched_ext}
                 \href{https://lwn.net/Articles/922405}
