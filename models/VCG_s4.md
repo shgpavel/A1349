@@ -368,71 +368,9 @@ Note that $\phi_P(\theta_i) > \phi_E(\theta_i)$ does not always hold: for a task
 
 ---
 
-## 11. Implementation Details (scx_auction, s4/A1349)
-
-This section documents deviations and refinements from the abstract model in the concrete BPF scheduler implementation.
-
-### 11.1 Continuous φ Formula (No Quantization)
-
-The theoretical model (§5.2) computes φ in "quantum" units:
-
-$$\phi_P = v_i - c_P \cdot \lceil l_i / s \rceil, \qquad \phi_E = v_i - c_E \cdot \lceil l_i \sigma / s \rceil$$
-
-Problem: all tasks with $l_i < s$ give $\lceil l_i/s \rceil = 1$, so short tasks have identical $\phi$ regardless of actual length (up to 50× precision loss).
-
-The implementation uses a continuous nanosecond formulation, scaling $v_i$ by $s$:
-
-$$\phi_P = v_i \cdot s - c_P \cdot l_{ns}, \qquad \phi_E = v_i \cdot s - c_E \cdot l_{ns} \cdot \sigma$$
-
-where $l_{ns}$ is the EWMA of measured runtime (ns), $\sigma = \mathtt{max\_cap} / \mathtt{min\_cap}$.
-
-**Key observation:** the P/E routing decision reduces to $c_E \cdot \sigma \geq c_P$ and is independent of $l_{ns}$ in the linear model. However, $\phi$ now continuously reflects "value minus cost" — $\phi < 0$ means a task consumes more resources than it creates value, which is directly used for differentiated starvation strategy (§11.3).
-
-### 11.2 Budget-Ratio Task Routing (Replacing φ Comparison)
-
-In the abstract model, allocation is solved via $\arg\max_\kappa \phi_\kappa(\theta_i)$. Since this reduces to comparing $c_E \sigma$ vs $c_P$ (independent of $l_i$), all tasks under a given topology would be routed to the same DSQ.
-
-The implementation uses a **budget ratio** as a behavioral proxy:
-
-$$\rho_i = \frac{B_i}{B_i^{\max}} \in [0, 1]$$
-
-- $\rho_i \geq \rho^*$ (default 50%): task is "bursty" (sleeps often, budget not depleted) → `AUCTION_DSQ_P`
-- $\rho_i < \rho^*$: task is "CPU-bound" (actively running, budget depleted) → `AUCTION_DSQ_E`
-
-**Economic interpretation:** budget accumulates proportional to task idle time ($\Delta t_{\text{idle}} \cdot v_i$), so $\rho_i$ reflects the ratio of idle to active time — a proxy for "how urgently the task needs a fast resource". High $\rho_i$ → interactive, latency-sensitive; low $\rho_i$ → batch, better suited for E-core.
-
-The routing threshold $\rho^*$ is analogous to the threshold policy in one-dimensional auctions: at $\rho_i \geq \rho^*$ a task "wins" the P-core; below that it is routed to the E-core.
-
-### 11.3 Proportional Delay for Starved Tasks
-
-Tasks with $B_i < B_i^{\max} / \mathtt{STARVE\_FRAC}$ are placed in `AUCTION_DSQ_STARVED`. Virtual deadline $v_d$ is shifted proportionally to the $\phi$ deficit:
-
-$$v_d \mathrel{+}= \frac{\max(0,\; -\phi_\kappa)}{D_{\text{starve}}}$$
-
-where $\kappa$ is the core type the task would otherwise be routed to, and $D_{\text{starve}} = 1000$ is a scaling constant.
-
-**Property:** tasks with $\phi < 0$ (cost exceeds value) wait longer than tasks with $\phi \geq 0$; tasks with a deeper deficit wait longer within `AUCTION_DSQ_STARVED`. This approximates the VCG payment: a "more expensive" task bears greater consequences for budget exhaustion.
-
-### 11.4 Proportional VCG Payment
-
-Theoretical payment: $p_i = c_\kappa \cdot \lfloor l_i / s \rceil$ (in quanta). The implementation uses a proportional payment:
-
-$$p_i = c_\kappa \cdot \frac{t_{\text{consumed}}}{s}$$
-
-where $t_{\text{consumed}} = s - \mathtt{p->scx.slice}$ is the actually used time in the current quantum. This eliminates the "first-quantum penalty" where a short task (1 ns) paid as much as a task using a full quantum (5 ms).
-
-### 11.5 Implementation Parameters
-
-| Constant | Value | Meaning |
-|----------|-------|---------|
-| `C_P_DEF` | 512 | P-core cost |
-| `C_E_DEF` | 256 | E-core cost |
-| `BURST_THRESHOLD_PCT` | 50 | Routing threshold $\rho^*$ (%) |
-| `BUDGET_MUL` | 2000 | $B_i^{\max} = v_i \cdot \mathtt{BUDGET\_MUL}$ |
-| `STARVE_FRAC` | 10 | Starvation threshold: $B_i < B_i^{\max}/10$ |
-| `STARVE_PHI_DIV` | 1000 | φ deficit → vd units divisor |
-| `REPLENISH_DIV` | 5,000,000 | Budget replenishment divisor (ns/unit) |
-| `P_CAP_PCT` | 90 | P-core classification threshold (% of max\_cap) |
+> **Theory ends here.** Everything above is the abstract model (system, MDP, contracts, VCG mechanism, online learning, properties). The concrete BPF realisation — parameter values, EEVDF deadline plumbing, budget-ratio routing, work-conservation overrides, and the code↔model mapping — lives in **[`VCG_s4_impl.md`](VCG_s4_impl.md)**.
+>
+> Changes to §1–§9 (model) require re-derivation; changes to implementation notes do not.
 
 ---
 
@@ -456,6 +394,5 @@ where $t_{\text{consumed}} = s - \mathtt{p->scx.slice}$ is the actually used tim
 | $m_\kappa(l)$ | Actual contract length: $m_P(l) = l$, $m_E(l) = \lceil l \sigma \rceil$ |
 | $\delta \in (0,1)$ | Discount factor |
 | $\alpha$ | MDP ergodicity parameter |
-| $\rho_i = B_i / B_i^{\max}$ | Budget ratio (proxy for "bursty vs CPU-bound") |
-| $\rho^*$ | Budget routing threshold (`BURST_THRESHOLD_PCT`) |
-| $l_{ns}$ | EWMA of task activation length (ns) — proxy for $l_i$ |
+| $\rho_i = B_i / B_i^{\max}$ | Budget ratio (proxy for "bursty vs CPU-bound") — see `VCG_s4_impl.md` §I2 |
+| $l_{ns}$ | EWMA of task activation length (ns) — proxy for $l_i$ — see `VCG_s4_impl.md` §I1 |
