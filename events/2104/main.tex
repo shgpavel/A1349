@@ -62,15 +62,15 @@
         \leavevmode%
         \hbox{%
                 \begin{beamercolorbox}[wd=.72\paperwidth,ht=2.8ex,dp=1.2ex,leftskip=1em]{title
-                                in head/foot}%
+                        in head/foot}%
                         \insertshorttitle
                 \end{beamercolorbox}%
                 \begin{beamercolorbox}[wd=.14\paperwidth,ht=2.8ex,dp=1.2ex,center]{author
-                                in head/foot}%
+                        in head/foot}%
                         Шаго П. Е.
                 \end{beamercolorbox}%
                 \begin{beamercolorbox}[wd=.14\paperwidth,ht=2.8ex,dp=1.2ex,center]{date
-                                in head/foot}%
+                        in head/foot}%
                         \insertframenumber/\inserttotalframenumber
                 \end{beamercolorbox}%
         }%
@@ -130,21 +130,22 @@
 
 \title{Математическое моделирование и
         реализация планировщика
-        процессов для гетерогенных процессорных архитектур}
+процессов для гетерогенных процессорных архитектур}
 
 \begin{document}
 
 \begin{frame}[plain]
         \begin{center}
                 \begin{shadowbox3}
-                {\scriptsize
-                        Санкт-Петербургский государственный
-                        университет \\ [0.1em]
-                        Факультет прикладной математики~-- процессов
-                        управления \\ [-0.4em]
-                        ООП СВ.5005.2022 Прикладная математика, фундаментальная информатика и
-                        программирование
-                }
+                        {\scriptsize
+                                Санкт-Петербургский государственный
+                                университет \\ [0.1em]
+                                Факультет прикладной математики~-- процессов
+                                управления \\ [-0.4em]
+                                ООП СВ.5005.2022 Прикладная
+                                математика, фундаментальная информатика и
+                                программирование
+                        }
                 \end{shadowbox3}
         \end{center}
 
@@ -160,7 +161,7 @@
                         {\bfseries
                                 Математическое моделирование и
                                 реализация планировщика
-                                процессов для гетерогенных процессорных архитектур}
+                        процессов для гетерогенных процессорных архитектур}
                 \end{shadowbox3}
 
                 \vspace{0.1em}
@@ -174,7 +175,7 @@
                         {\scriptsize
                                 \textit{Научный руководитель:}\\[0.15em]
                                 кандидат физ.-мат. наук, доцент\\
-                                Корхов В.\,В.}
+                        Корхов В.\,В.}
                 \end{minipage}
                 \hfill
                 \begin{minipage}[t]{0.45\linewidth}
@@ -182,7 +183,7 @@
                         {\scriptsize
                                 \textit{Рецензент:}\\[0.15em]
                                 эксперт по архитектуре и сетевому стеку,\\
-                                ООО НИЦ АЭРОДИСК, Анохин Ю.\,В.}
+                        ООО НИЦ АЭРОДИСК, Анохин Ю.\,В.}
                 \end{minipage}
         \end{minipage}
 
@@ -192,448 +193,565 @@
         \begin{center}
                 {\scriptsize
                         Санкт-Петербург\\[-0.5em]
-                        2026}
+                2026}
         \end{center}
 \end{frame}
 
-
-\begin{frame}{Введение}
-\end{frame}
-
-
 \begin{frame}{Постановка задачи}
-        \begin{itemize}
-        \item Стандартный планировщик в Linux является частью ядра
-                и не может быть модифицирован без его модификации
-                и пересборки
+        \begin{columns}[T]
+                \column{0.5\textwidth}
+                \begin{itemize}
+                        \item Современные процессоры всё чаще имеют гетерогенную
+                                компоновку, в которой
+                                производительные P\nobreakdash-ядра дополняются
+                                энергоэффективными E\nobreakdash-ядрами
 
-                \vspace{0.3em}
-                \item This work investigates reimplementation of EEVDF
-                        via sched\_ext to study how different implementation
-                        approach can affect scheduling performance
+                        \item Стандартный планировщик Linux не
+                                различает типы ядер,
+                                поэтому не всегда способен
+                                сбалансировать производительность
+                                и энергопотребление так, как это
+                                задумано архитектурой CPU
+                \end{itemize}
 
-                        Данная работа исследует варианты
+                \column{0.5\textwidth}
+                \textbf{Цели работы}
+                \begin{enumerate}
+                \item Формализовать распределение временных слотов
+                        P/E\nobreakdash-ядер
+                        как динамический аукцион Викри (VCG), в котором
+                        задачи конкурируют за вычислительный ресурс
 
-                        
-                        \vspace{0.3em}
-                \item To evaluate the implementation, standard
-                        workload benchmarks are used such as
-                        hackbench, sysbench, and eBPF-based
-                        scheduling latency tracing
+                \item Реализовать полученный механизм используя
+                        \texttt{sched\_ext} и оценить
+                        его по метрикам на тестах производительности
+                \end{enumerate}
+        \end{columns}
 
-                        \vspace{0.3em}
-                \item Then the sched\_ext variant is compared against
-                        the built-in kernel EEVDF to identify
-                        trade-offs introduced by eBPF dispatch
-        \end{itemize}
+        \vspace{0.2em}
+        \begin{shadowbox2}
+                \small Каждое ядро рассматривается как
+                \textbf{истощаемое благо}, неиспользованный квант
+                времени теряется безвозвратно. Задача\nobreakdash-агент
+                характеризуется типом $\theta_i = (v_i, l_i)$, а
+                механизм максимизирует социальное благосостояние.
+        \end{shadowbox2}
 \end{frame}
 
-\begin{frame}{sched\_ext}
-        \begin{shadowbox2}
-                \small \textbf{sched\_ext} (scheduler extensions)
-                is a new Linux kernel infrastructure that enabled
-                implementing CPU scheduling policies as eBPF programs
-                attached to kernel scheduling hooks at runtime
-        \end{shadowbox2}
+\begin{frame}{Модель системы}
+        \begin{columns}[T]
+                \column{0.5\textwidth}
+                \textbf{Аппаратная платформа}
+                \begin{itemize}
+                        \item Ядра: $\mathcal{P} = \{P_1,\ldots,P_{K_P}\}$,\;
+                                $\mathcal{E} = \{E_1,\ldots,E_{K_E}\}$
+                        \item Дискретное время $t = 1,2,3,\ldots$
+                        \item Замедление на E-ядре:
+                                $\sigma = \eta_P/\eta_E > 1$
+                        \item Общий ISA (любая задача может быть
+                                выполнена на любом ядре)
+                \end{itemize}
+
+                \column{0.5\textwidth}
+                \textbf{Задачи как агенты}
+                \begin{itemize}
+                        \item Тип $\theta_i = (v_i, l_i)$ (оценка и длина)
+                        \item Полезность $u_i = v_i - p_i$ при полном
+                                выполнении
+                        \item Бюджет $B_i$ по классу обслуживания:
+                \end{itemize}
+                \vspace{0.2em}
+                {\footnotesize
+                \begin{tabular}{@{}ll@{}}
+                        Реального времени & $B_{RT} \gg 1$ \\
+                        Интерактивный     & $B_{int}$ \\
+                        Пакетный          & $B_{batch}$ \\
+                        Фоновый           & $B_{bg} \approx 0$
+                \end{tabular}}
+        \end{columns}
 
         \vspace{0.4em}
-        \begin{columns}[T]
-                \column{0.50\textwidth}
-                \vspace{0.5em}
-                \centering
-                \includegraphics[width=\linewidth]{../0212/res/libbpf.png}
-
-                \vspace{0.1em}
-                {\tiny \textbf{Figure\ 1.} eBPF in the network subsystem}
-
-                \column{0.50\textwidth}
-                \textbf{DSQs} (dispatch queues):
-                {\footnotesize
-                        \begin{itemize}
-                                \item \texttt{SCX\_DSQ\_LOCAL} --
-                                        per-core fast path
-                                \item \texttt{SCX\_DSQ\_GLOBAL} -- shared queue
-                \end{itemize}}
-
-                \vspace{0.2em}
-                \textbf{Scheduler cycle:}
-                {\footnotesize
-                        \begin{itemize}
-                                \item \texttt{select\_cpu} -- pick idle cpu core
-                                \item \texttt{enqueue} -- place task
-                                        in global DSQ
-                                \item \texttt{dispatch} -- move to local DSQ
-                                \item \texttt{running} /
-                                        \texttt{stopping} -- based on vtime
-                \end{itemize}}
-
-        \end{columns}
-\end{frame}
-
-\begin{frame}{Earliest Eligible Virtual Deadline First Model}
-        The ideal reference system is such system where every active
-        client $i$ continuously receives share $w_i / W(t)$ of the CPU.
-        EEVDF tracks this entitlement through system virtual time $V(t)$,
-
-        $$ W(t)=\sum_{j\in A(t)} w_j, \qquad
-        V(t)=\int_{t_0}^{t}\frac{d\tau}{W(\tau)}.$$
-
-        When client $i$ submits a request of size $r$, the algorithm
-        assigns a \emph{virtual eligible time} and a \emph{virtual deadline},
-
-        $$v_e = V(t_0^i)+\frac{s_i(t_0^i,t)}{w_i}, \qquad
-        v_d = v_e + \frac{r}{w_i},$$
-
-        where $s_i(t_0^i,t)$ is the service received since $t_0^i$.
-\end{frame}
-
-\begin{frame}{Earliest Eligible Virtual Deadline First Model}
-        A request is runnable only once $v_e \le V(t)$. Among all
-        eligible requests, EEVDF dispatches the one with the smallest
-        virtual deadline $v_d$.
-
-        \vspace{0.6em}
-
-        A client behind its proportional share carries a smaller $v_e$
-        and becomes eligible sooner. Larger weights compress $r/w_i$,
-        so heavier tasks earn earlier deadlines for the same request size.
-
-        \vspace{0.6em}
-
         \begin{shadowbox}
-                The lag of client $i$ measures the signed deviation between
-                ideal model entitlement and actual service received.
-                EEVDF guarantees \cite{stoica} $|\mathrm{lag}_i(t)| <
-                q$ in steady state,
-                the optimal bound for any discrete proportional-share
-                scheduler with quantum $q$.
+                \footnotesize На E-ядре задача длиной $l_i$ исполняется за
+                $\lceil l_i \cdot \sigma \rceil$ квантов.
+                Ценность $v_i$ начисляется только при полном выполнении
+                (аналог контракта Сано).
         \end{shadowbox}
 \end{frame}
 
-\begin{frame}{Mapping to sched\_ext}
-        \begin{columns}
-                \column{0.42\textwidth}
-                \begin{tabular}{ll}
-                        Client  & $\to$ \texttt{task\_struct} \\[2pt]
-                        $w_i$   & $\to$ \texttt{p->scx.weight} \\[2pt]
-                        $v_i$   & $\to$ \texttt{scx.dsq\_vtime} \\[2pt]
-                        $V(t)$  & $\to$ \texttt{vtime\_now} \\[2pt]
-                        $r$     & $\to$ \texttt{SCX\_SLICE\_DFL} $ ( \Delta ) $
-                \end{tabular}
+\begin{frame}{MDP модель}
+        \begin{columns}[T]
+                \column{0.5\textwidth}
+                \textbf{Состояние} $s^t =
+                (\mathbf{x}^t,\,\mathbf{b}^t,\,\boldsymbol{\omega}^t)$
+                \begin{itemize}
+                        \item $\mathbf{x}^t$~-- оставшиеся кванты на
+                                каждом ядре
+                        \item $\mathbf{b}^t$~-- остатки бюджетов активных задач
+                        \item $\boldsymbol{\omega}^t$~-- внешние факторы
+                                (температура, нагрузка)
+                \end{itemize}
 
-                \vspace{3.5em}
-                {\footnotesize $ S $ --  integer scaler}
+                \vspace{0.3em}
+                \textbf{Действие} $a^t = (a_{i,P}^t, a_{i,E}^t)_i$
+                при ограничениях:
+                $$a_{i,P}^t + a_{i,E}^t \leq 1, \quad \forall i$$
+                $$\sum_i a_{i,P}^t \leq K_P^t, \quad
+                \sum_i a_{i,E}^t \leq K_E^t$$
 
-                \column{0.58\textwidth}
-                \textbf{enqueue:}
-                $$VE_i = \max(v_i,\; V_\mathrm{now} - \Delta),\quad
-                v_i \leftarrow VE_i$$
-                $$VD_i = VE_i + \frac{\Delta \cdot S}{w_i}
-                \;\to\; \text{inserted by } VD_i$$
+                \column{0.5\textwidth}
+                \textbf{Вознаграждение}
 
-                \textbf{running:}
-                $$V_\mathrm{now} \leftarrow \max(V_\mathrm{now},\; VE_i)$$
+                \vspace{0.2em}
+                Задача $i$ (покупатель):
+                $$r_i(s,a) = v_i \cdot \mathbb{1}[\text{$i$ получила ядро}]$$
 
-                \textbf{stopping:}
-                $$v_i \leftarrow v_i +
-                \frac{\mathrm{consumed}\cdot S}{w_i}$$
+                Планировщик (продавец):
+                $$r_0 = \mu_P\!\!\sum_{k\in\mathcal{P}}\!\mathbb{1}[x_k \geq 1]
+                + \mu_E\!\!\sum_{k\in\mathcal{E}}\!\mathbb{1}[x_k \geq 1]$$
+
+                \vspace{0.2em}
+                \textbf{Социальное благосостояние}
+                $$W(\pi) = \lim_{T\to\infty} \frac{1}{T}
+                \mathbb{E}\!\left[\sum_{t=1}^T R(s^t,a^t)\right]$$
         \end{columns}
 \end{frame}
 
-\begin{frame}{Environment}
+\begin{frame}{Механизм VCG}
+        \textbf{Эффективная ценность} задачи $i$ на ядре типа
+        $\kappa \in \{P, E\}$
+        $$\phi_P(\theta_i) = v_i - c_P \cdot l_i, \quad
+        \phi_E(\theta_i) = v_i - c_E \cdot \lceil l_i \sigma \rceil$$
+
+        \vspace{0.1em}
+        \textbf{Оптимальное распределение} (максимизация $W$)
+        $$a^t = \arg\max_{a} \sum_i \bigl[a_{i,P}\,\phi_P(\theta_i)
+        + a_{i,E}\,\phi_E(\theta_i)\bigr]
+        + \delta\, \mathbb{E}[W(s^{t+1})]$$
+
+        \vspace{0.1em}
+        \begin{columns}[T]
+                \column{0.52\textwidth}
+                \textbf{Платёж VCG} задачи $i$
+                $$p_i^t = W_{-i}(s^t) - \bigl(W(s^t) - \phi_\kappa(\theta_i)\bigr)$$
+
+                \vspace{0.1em}
+                {\footnotesize Задача $i$ платит ровно то, что теряют
+                остальные агенты из-за её присутствия (pivot rule)}
+
+                \column{0.48\textwidth}
+                \begin{shadowbox}
+                        \footnotesize
+                        \textbf{Свойства механизма}
+                        \centering
+                        \begin{itemize}
+                                \item Стимульная совместимость
+                                        (выгодно сообщать истинный $\theta_i$)
+                                \item Индивидуальная рациональность
+                                        $u_i \geq 0$
+                                \item Бюджетное ограничение
+                                        $p_i \leq B_i^t$
+                        \end{itemize}
+                \end{shadowbox}
+        \end{columns}
+\end{frame}
+
+\begin{frame}{Маршрутизация задач}
+        \textbf{Прокси для распределения}: отношение бюджета
+        $\rho_i = B_i / B_i^{\max}$
+
+        \vspace{0.3em}
+        \begin{columns}[T]
+                \column{0.33\textwidth}
+                \begin{shadowbox2}
+                        \small\textbf{DSQ\_P}
+
+                        \vspace{0.3em}
+                        \footnotesize
+                        $\rho_i \geq \rho^*\ (50\%)$
+
+                        \vspace{0.2em}
+                        Интерактивные,\\«bursty» задачи
+
+                        \vspace{0.2em}
+                        Высокий $\rho_i$ = много\\простоя =
+                        чувствитель-\\ность к задержке
+                \end{shadowbox2}
+
+                \column{0.33\textwidth}
+                \begin{shadowbox2}
+                        \small\textbf{DSQ\_E}
+
+                        \vspace{0.3em}
+                        \footnotesize
+                        $\rho_i < \rho^*$
+
+                        \vspace{0.2em}
+                        CPU-bound,\\пакетные задачи
+
+                        \vspace{0.2em}
+                        Низкий $\rho_i$ = активно\\работает = подходит
+                        \\для E-ядра
+                \end{shadowbox2}
+
+                \column{0.33\textwidth}
+                \begin{shadowbox2}
+                        \small\textbf{DSQ\_Starved}
+
+                        \vspace{0.3em}
+                        \footnotesize
+                        $B_i < B_i^{\max} / 10$
+
+                        \vspace{0.2em}
+                        Бюджет исчерпан
+
+                        \vspace{0.2em}
+                        $v_d \mathrel{+}=
+                        \max(0,\,-\phi_\kappa)\,/\,D$
+                \end{shadowbox2}
+        \end{columns}
+
+        \vspace{0.3em}
+        \begin{shadowbox}
+                \footnotesize Бюджет пополняется пропорционально времени
+                простоя: $B_i \mathrel{+}= \Delta t_{\text{idle}} \cdot v_i
+                / D_{\text{rep}}$~--- аналог порогового правила в
+                одномерных аукционах
+        \end{shadowbox}
+\end{frame}
+
+\begin{frame}{Реализация (scx\_auction)}
+        \begin{columns}[T]
+                \column{0.57\textwidth}
+                \textbf{Отклонения от абстрактной модели:}
+
+                \vspace{0.2em}
+                \textbf{(1) Непрерывная формула $\phi$} (нс, не кванты):
+                $$\phi_P = v_i \cdot s - c_P \cdot l_{ns}, \qquad
+                \phi_E = v_i \cdot s - c_E \cdot l_{ns} \cdot \sigma$$
+                где $l_{ns}$~--- EWMA измеренного времени исполнения;
+                $\phi < 0$ означает прямое направление в DSQ\_Starved
+
+                \vspace{0.3em}
+                \textbf{(2) Пропорциональный платёж}:
+                $$p_i = c_\kappa \cdot t_{\text{consumed}}\,/\,s$$
+                устраняет штраф за первый квант у коротких задач
+
+                \column{0.43\textwidth}
+                \begin{shadowbox}
+                        \small\textbf{Параметры}
+
+                        \vspace{0.2em}
+                        \footnotesize
+                        \begin{tabular}{ll}
+                                \texttt{C\_P\_DEF}      & 512 \\[2pt]
+                                \texttt{C\_E\_DEF}      & 256 \\[2pt]
+                                \texttt{BURST\_PCT}     & 50\% \\[2pt]
+                                \texttt{BUDGET\_MUL}    & 2000 \\[2pt]
+                                \texttt{STARVE\_FRAC}   & 10 \\[2pt]
+                                \texttt{P\_CAP\_PCT}    & 90\%
+                        \end{tabular}
+                \end{shadowbox}
+        \end{columns}
+\end{frame}
+
+\begin{frame}{Среда тестирования}
         \begin{columns}[T]
                 \column{0.24\textwidth}
                 \begin{shadowbox}
-                        \small\textbf{System}
+                        \small\textbf{Система}
 
                         \vspace{0.25cm}
                         \footnotesize
-                        Kernel:\\Linux 7.0-rc4
+                        Ядро:\\Linux 7.0
 
                         \vspace{0.25cm}
-                        CPU:\\Intel Core\\ Ultra 7 265K
+                        CPU:\\Intel Core\\ Ultra 7 265K\\
+                        12E + 8P
                 \end{shadowbox}
 
-                \vspace{0.3cm}
-
+                \vspace{0.1cm}
                 \begin{shadowbox}
-                        \small\textbf{Comparison}
+                        \small\textbf{Сравнение}
 
                         \vspace{0.2cm}
                         \footnotesize
-                        Built-in EEVDF\\
+                        Linux EEVDF\\
                         \textit{vs}\\
-                        sched\_ext EEVDF\\
+                        scx\_auction (VCG)
                 \end{shadowbox}
 
                 \column{0.52\textwidth}
                 \begin{shadowbox}
-                        \small\textbf{Benchmarks}
+                        \small\textbf{Бенчмарки}
 
                         \vspace{0.1cm}
                         \footnotesize
                 \begin{itemize}\setlength{\itemsep}{0.05cm}\setlength{\parskip}{0pt}
-                                \item \textbf{hackbench} -- 1000 tasks\\
-                                        Groups of processes exchange messages
-                                        intensively, simulating high
-                                        system load.
-                                        Reflects context-switching and task
-                                        coordination efficiency.
+                                \item \textbf{hackbench}~--- 1000 задач\\
+                                        Интенсивный обмен сообщениями,
+                                        высокая нагрузка на планировщик.
+                                        Оценивает переключение контекста.
 
-                                \item \textbf{sysbench} -- default parameters\\
-                                        CPU, memory, and disk I/O throughput.
-                                        Simulates OLTP database operations under
-                                        realistic conditions.
+                                \item \textbf{sysbench}~---
+                                        стандартные параметры\\
+                                        CPU, память, дисковый I/O.
+                                        Моделирует OLTP под
+                                        реалистичной нагрузкой.
 
-                                \item \textbf{sched-latency} -- custom eBPF\\
-                                        Attaches to tracepoints and
-                                        records p99 schedule
-                                        latency.
+                                \item \textbf{sched-latency}~---
+                                        собственный eBPF\\
+                                        Трейсинг трейспоинтов, запись
+                                        p99 задержки планирования.
                         \end{itemize}
                 \end{shadowbox}
 
                 \column{0.24\textwidth}
                 \begin{shadowbox}
-                        \small\textbf{Metrics}
+                        \small\textbf{Метрики}
 
                         \vspace{0.2cm}
                         \footnotesize
                         \textbf{hackbench}\\
-                        Total time ($ s $)
+                        Время ($s$)
 
                         \vspace{0.2cm}
                         \textbf{sysbench}\\
-                        $ Events/s $
+                        $\text{Events}/s$
 
                         \vspace{0.2cm}
                         \textbf{sched-latency}\\
-                        p99 lat ($\mu s$)
+                        p99 ($\mu s$)
                 \end{shadowbox}
 
         \end{columns}
 \end{frame}
 
-\begin{frame}{Results}
-        \centering
-        \includegraphics[width=\textwidth,height=0.87\textheight,keepaspectratio]{res/Fig1.eps}
+\begin{frame}{Результаты: Hackbench}
+        \begin{center}
+                \vspace{0.5em}
+                \begin{shadowbox3}
+                        {\Large\textbf{Нет данных}}\\[0.4em]
+                        {\footnotesize Замеры scx\_auction в процессе сбора}
+                \end{shadowbox3}
 
-        {\tiny \textbf{Figure\ 2.} Test results for builtin EEVDF scheduler
-        and implemented sched\_ext EEVDF}
-\end{frame}
-
-\begin{frame}{Analysis}
-        \begin{columns}
-                \column{0.5\textwidth}
-                \begin{itemize}
-                        \item \textbf{Hackbench:} 0.20\,s for both
-                                schedulers (+0.0\%)
-                                \vspace{0.1cm}
-                        \item[$\to$] eBPF dispatch overhead is
-                                negligible for intensive,
-                                scheduler demanding workloads
-                \end{itemize}
-
-                \vspace{0.4cm}
-                \begin{itemize}
-                        \item \textbf{Sysbench:}
-                                4157 $\to$ 7357 events/s
-                                \vspace{0.1cm}
-                        \item[$\to$] \textcolor[rgb]{0, 0.6, 0.1}{+77\%}
-                                -- may offer advantages for
-                                sustained computational workloads
-                \end{itemize}
-
-                \column{0.5\textwidth}
-                \begin{itemize}
-                        \item \textbf{Scheduling latency (p99):}
-                                25\,$\mu$s $\to$ 250\,$\mu$s
-                                \vspace{0.1cm}
-                        \item[$\to$] \textcolor{red}{$10\times$
-                                increase} attributable to eBPF
-                                dispatch overhead and contention
-                                on the single shared DSQ
-                \end{itemize}
-
-                \vspace{0.4cm}
+                \vspace{1em}
                 \begin{shadowbox}
-                        \footnotesize{Proposed sched\_ext EEVDF
-                                achieves in-kernel EEVDF performance parity
-                                while decoupling scheduling policy
-                                from the kernel
-                        and providing greater flexibility}
+                        \footnotesize
+                        \textbf{Метрика:} полное время выполнения ($s$),
+                        меньше~--- лучше\\[0.3em]
+                        \textbf{Нагрузка:} 1000 задач, интенсивный обмен
+                        сообщениями\\[0.3em]
+                        \textbf{Ожидание:} нейтральный результат~---
+                        VCG-маршрутизация при высокой конкуренции
+                        сводится к базовому EEVDF
                 \end{shadowbox}
-        \end{columns}
+        \end{center}
 \end{frame}
 
-\begin{frame}{Conclusion}
+\begin{frame}{Результаты: Sysbench}
+        \begin{center}
+                \vspace{0.5em}
+                \begin{shadowbox3}
+                        {\Large\textbf{Нет данных}}\\[0.4em]
+                        {\footnotesize Замеры scx\_auction в процессе сбора}
+                \end{shadowbox3}
+
+                \vspace{1em}
+                \begin{shadowbox}
+                        \footnotesize
+                        \textbf{Метрика:} пропускная способность
+                        ($\text{events}/s$), больше~--- лучше\\[0.3em]
+                        \textbf{Нагрузка:} CPU-bound, однопоточная
+                        вычислительная задача\\[0.3em]
+                        \textbf{Ожидание:} задача с низким $\rho_i$
+                        маршрутизируется на E-ядро; потенциальный
+                        выигрыш при длинном фиксированном кванте
+                \end{shadowbox}
+        \end{center}
+\end{frame}
+
+\begin{frame}{Результаты: Задержка планирования}
+        \begin{center}
+                \vspace{0.5em}
+                \begin{shadowbox3}
+                        {\Large\textbf{Нет данных}}\\[0.4em]
+                        {\footnotesize Замеры scx\_auction в процессе сбора}
+                \end{shadowbox3}
+
+                \vspace{1em}
+                \begin{shadowbox}
+                        \footnotesize
+                        \textbf{Метрика:} p99 задержка планирования
+                        ($\mu s$), меньше~--- лучше\\[0.3em]
+                        \textbf{Нагрузка:} трейсинг трейспоинтов
+                        под смешанной нагрузкой\\[0.3em]
+                        \textbf{Ожидание:} интерактивные задачи
+                        (высокий $\rho_i$) на P-ядре~---
+                        потенциальное снижение хвостовой задержки
+                        относительно однородного планировщика
+                \end{shadowbox}
+        \end{center}
+\end{frame}
+
+\begin{frame}{Анализ}
+        \begin{center}
+                \vspace{0.5em}
+                \begin{shadowbox3}
+                        {\Large\textbf{Нет данных}}\\[0.4em]
+                        {\footnotesize Анализ будет проведён после
+                        сбора результатов}
+                \end{shadowbox3}
+
+                \vspace{1em}
+                \begin{shadowbox}
+                        \footnotesize
+                        \textbf{Ключевые вопросы:}
+                        \begin{itemize}
+                                \item Корректно ли $\rho_i$ разделяет
+                                        интерактивные и CPU-bound задачи?
+                                \item Насколько велик overhead VCG-платежей
+                                        относительно ядерного EEVDF?
+                                \item Подтверждается ли снижение хвостовой
+                                        задержки для P-ядерных задач?
+                        \end{itemize}
+                \end{shadowbox}
+        \end{center}
+\end{frame}
+
+\begin{frame}{Заключение}
         \begin{itemize}
-                \item EEVDF scheduling algorithm is faithfully reproducible
-                        outside the kernel via sched\_ext and eBPF
+                \item Задача распределения P/E-ядер формализована
+                        как динамический VCG-аукцион в рамках MDP
                         \vspace{0.2cm}
-                \item Policy changes take effect without recompilation
-                        or reboot, enabling rapid iteration
+                \item Механизм реализован через sched\_ext (eBPF)~---
+                        политика изменяется без пересборки ядра
                         \vspace{0.2cm}
-                \item eBPF dispatch overhead is significant,
-                        overall performance parity with in-kernel
-                        EEVDF is achievable
+                \item Маршрутизация через отношение бюджета $\rho_i$~---
+                        практическое приближение к оптимальному
+                        пороговому правилу аукциона
                         \vspace{0.2cm}
-                \item Results lay the groundwork for future research
-                        targeting heterogeneous CPU platforms
+                \item Направления развития: онлайн-обучение (IHMDP-VCG),
+                        сравнение с ядерным EEVDF и s3+ (capacity-aware)
         \end{itemize}
 \end{frame}
 
-\begin{frame}{References \& Q/A}
+\begin{frame}{Список литературы \& Вопросы}
         \begin{thebibliography}{20}
 
-                \bibitem{stoica}
-                Stoica~I., Abdel-Wahab~H.
-                Earliest eligible virtual deadline first.
-                PhD thesis. Old Dominion University, 1995
+                \bibitem{leon}
+                Leon~G., Etesami~O.
+                Mechanism Design for Scheduling with Heterogeneous Workers.
+                Advances in Neural Information Processing Systems, 2022
 
-                \bibitem{eevdf}
-                \href{https://lwn.net/Articles/925371}
-                {An EEVDF CPU scheduler for Linux (LWN)}
+                \bibitem{sano}
+                Sano~T.
+                Dynamic Mechanism Design for Multi-Period Contracting.
+                Working paper, 2023
 
                 \bibitem{sched_ext}
                 \href{https://lwn.net/Articles/922405}
                 {The extensible scheduler class (LWN)}
 
+                \bibitem{eevdf}
+                \href{https://lwn.net/Articles/925371}
+                {An EEVDF CPU scheduler for Linux (LWN)}
+
         \end{thebibliography}
 \end{frame}
 
 \begin{frame}{Extra}
-        \textbf{Proof that $|\mathrm{lag}_i| < \Delta$ is preserved}
+        \textbf{Стимульная совместимость (Sano, Теорема~1)}
 
-        \vspace{0.15cm}
-        \begin{itemize}
-                \item In the continuous model, a sleeping task accumulates
-                        negative lag $-\tau$ for virtual time $\tau$
-                        it was absent
-                \item Unclamped, it would re-enter with an ancient $v_i$
-                        and claim up to $\tau$ units of "catch-up" service
-                \item The clamp enforces $VE_i \ge V_{\mathrm{now}} - \Delta$,
-                        so at most one quantum $\Delta$ of credit is
-                        carried forward
-                \item $\mathrm{lag}_i = \text{(ideal service)} -
-                        \text{(actual service)} \le \Delta$ at the moment of
-                        re-enqueue, which is exactly the bound
-                        $|\mathrm{lag}_i| < q$
-                        with $q = \Delta$
-        \end{itemize}
+        \vspace{0.2cm}
+        Механизм стимульно совместим тогда и только тогда, когда
+        для каждой задачи $i$:
+
+        \begin{enumerate}
+                \item $\alpha_i(v_i, l_i)$ не убывает по $v_i$
+                        при фиксированном $l_i$
+                \item $\int_0^{v_i} \alpha_i(\nu, l_i)\,d\nu$ не возрастает
+                        по $l_i$ при фиксированном $v_i$
+                \item Существует $\underline{\Pi}_i$, не зависящее от $l_i$:
+                        $$\Pi_i(v_i, l_i) = \underline{\Pi}_i +
+                        \int_0^{v_i} \alpha_i(\nu, l_i)\,d\nu$$
+        \end{enumerate}
 
         \vspace{0.1cm}
         \begin{shadowbox}
-                \footnotesize{The clamp is not a deviation from EEVDF --
-                        it \emph{enforces} the lag bound that
-                the continuous model satisfies by construction}
+                \footnotesize Задачам невыгодно завышать оценку $v_i$
+                или занижать длину $l_i$~--- правдивая ставка
+                является доминирующей стратегией
         \end{shadowbox}
 \end{frame}
 \addtocounter{framenumber}{-1}
 
 \begin{frame}{Extra}
-        \textbf{Critiques:} (a) lazy advancement breaks the $V(t)$ definition;
-        (b) $\texttt{total\_weight}$ is never used in the scheduling formulas.
+        \textbf{Онлайн-обучение: IHMDP-VCG (Leon \& Etesami)}
 
-        \vspace{0.25cm}
-        \textbf{(a) Lazy advancement:}
+        \vspace{0.15cm}
+        При неизвестных распределениях типов задач и ядре MDP планировщик
+        обучается онлайн. Эпизодическая структура:
+
         \begin{itemize}
-                \item EEVDF requires $V(t)$ to be monotonically non-decreasing
-                        and to track the frontier of virtual-time consumption
-                \item \texttt{vtime\_now} $\leftarrow
-                        \max(\texttt{vtime\_now},\; v_i)$
-                        in \texttt{running()} is exactly such a
-                        monotone frontier
-                \item Dispatch ordering depends only on $VD_i$ comparisons,
-                        not on the absolute value of $V_{\mathrm{now}}$ so
-                        ordering is preserved
+                \item \textbf{Фаза перемешивания} (длина $d^{[k]}$):
+                        вывод цепи Маркова на стационарное распределение
+                \item \textbf{Стационарная фаза} (длина $l^{[k]}$):
+                        сбор платежей $\hat{p}^{[k]}$, обновление оценок
         \end{itemize}
 
         \vspace{0.15cm}
-        \textbf{(b) \texttt{total\_weight} is used -- in
-        \texttt{set\_weight()}:}
-        \begin{itemize}
-                \item When a task's weight changes, the lag must be
-                        rescaled: $\mathrm{lag} \cdot
-                        W_{\mathrm{old}} / W_{\mathrm{new}}$
-                \item The code adjusts \texttt{vtime\_now} by exactly this
-                        proportional correction, preserving relative
-                        virtual positions
-                \item $W(t)$ is not needed in the per-enqueue formulas because
-                        lazy advancement already subsumes $1/W(t)$ integration
-        \end{itemize}
-\end{frame}
-\addtocounter{framenumber}{-1}
+        \textbf{Гарантии} при $T \to \infty$ (с вер. $\geq 1 - O(\zeta)$):
 
-\begin{frame}{Extra}
-        \textbf{Critique:} $S$ appears without justification;
-        if too small, $\Delta \cdot S / w_i$ truncates to zero.
-
-        \vspace{0.3cm}
-        $S = \texttt{SCALE} = 1000$ (source: \texttt{scx\_eevdf.bpf.c:20})
-
-        \vspace{0.3cm}
-        \textbf{Precision analysis} (sched\_ext weight range: $1 \le
-                w \le 10000$;
-        $\Delta = \texttt{SCX\_SLICE\_DFL} = 5\,\text{ms}$):
-
-        \vspace{0.15cm}
+        \vspace{0.1cm}
         \begin{columns}
                 \column{0.5\textwidth}
-                \begin{itemize}
-                        \item $w = 1$: $\;\Delta \cdot S / w = 5 \times 10^9$
-                        \item $w = 10000$: $\;\Delta \cdot S / w = 500\,000$
-                        \item Ratio: $10\,000\times$ -- exactly proportional
-                \end{itemize}
+                \begin{tabular}{ll}
+                        Регрет благосостояния &
+                        $\tilde{O}(\varepsilon T n + T^{2/3} n)$ \\[3pt]
+                        Регрет продавца &
+                        $\tilde{O}(\varepsilon T n^2 + T^{2/3} n^2)$ \\[3pt]
+                        Регрет покупателей &
+                        $\tilde{O}(\varepsilon T n^2 + T^{2/3} n^2)$
+                \end{tabular}
 
                 \column{0.5\textwidth}
                 \begin{shadowbox}
-                        \footnotesize{
-                                Non-zero for all $w \le 5 \times 10^9$
-
-                                \vspace{0.1cm}
-                                Proportional-share property holds:
-                                heavier tasks get larger $w_i$,
-                                smaller $\Delta \cdot S / w_i$,
-                                earlier virtual deadline
-                        }
+                        \footnotesize Асимптотически: эффективность,
+                        стимульная совместимость и индивидуальная
+                        рациональность~--- одновременно
                 \end{shadowbox}
         \end{columns}
-
-        \vspace{0.2cm}
-        \footnotesize{$S$ cancels in all fairness ratios; only the
-                ratio $\Delta \cdot S / w_i$ matters, and it is exact integer
-        arithmetic}
 \end{frame}
 \addtocounter{framenumber}{-1}
 
 \begin{frame}{Extra}
-        \vspace{0.3cm}
-        \textbf{Hypothesis -- slice length difference:}
-        \begin{itemize}
-                \item Kernel EEVDF dynamically shortens the time slice
-                        under contention: $q = q_{\min} \cdot \log_2 n$
-                        (where $n$ is the number of runnable tasks)
-                \item sched\_ext uses a fixed $\Delta =
-                        \texttt{SCX\_SLICE\_DFL} = 5\,\text{ms}$
-                        regardless of task count
-                \item Sysbench is a single-threaded CPU-bound workload;
-                        with few tasks, the kernel EEVDF still applies
-                        its default shorter quanta and
-                        context-switches more often
-                \item Fewer preemptions $\Rightarrow$ lower
-                        context-switch overhead
-                        $\Rightarrow$ higher throughput -- consistent with
-                        the hackbench result (identical: 0.20\,s)
-                        where many tasks eliminate the slice-length advantage
-        \end{itemize}
+        \textbf{Пример: $K_P = K_E = 1$, одно свободное ядро типа $\kappa$}
 
-        \begin{shadowbox2}
-                \footnotesize{The schedulers implement the same EEVDF
-                        \emph{policy} and
-                        the throughput gap traces to a
-                        \emph{parameter} difference,
-                not an algorithmic one}
-        \end{shadowbox2}
+        \vspace{0.2cm}
+        \textbf{Победитель:}
+        $$i^* = \arg\max_{i \in \mathcal{N}^t,\; B_i^t > 0}\;
+        \phi_\kappa(\theta_i) + \delta^{m_\kappa(l_i)}\,\bar{W}_\kappa$$
+
+        где $m_P(l) = l$,\; $m_E(l) = \lceil l\cdot\sigma \rceil$
+
+        \vspace{0.2cm}
+        \textbf{Платёж победителя:}
+        $$p_{i^*} = \phi_\kappa^{-1}\!\left(\phi_\kappa(\theta_j) +
+                \bigl(\delta^{m_\kappa(l_j)} - \delta^{m_\kappa(l_{i^*})}\bigr)
+        \bar{W}_\kappa \;\Big|\; l_{i^*}\right)$$
+
+        где $j$~--- задача на втором месте.
+
+        \vspace{0.2cm}
+        \begin{shadowbox}
+                \footnotesize
+                $\phi_P(\theta_i) > \phi_E(\theta_i)$ выполняется не всегда:
+                при малом $v_i$ и большом $l_i$ E-ядро может дать
+                большую эффективную ценность ($c_E \cdot \lceil l_i\sigma\rceil
+                < c_P \cdot l_i$ при $\sigma < \gamma$).
+                Оптимальная стратегия нетривиальна.
+        \end{shadowbox}
 \end{frame}
 \addtocounter{framenumber}{-1}
 
