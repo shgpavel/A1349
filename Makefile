@@ -9,6 +9,8 @@ SCX_LAVD_BIN ?= $(abspath $(SCX_DIR)/target/release/scx_lavd)
 BENCH_INTERVAL ?= 1
 BENCH_RESULTS_DIR ?= results
 BENCH_PLOTS_DIR ?= plots
+BENCH_LEVELS ?=
+BENCH_SCHEDS ?=
 
 all: $(IMPL_DIRS)
 
@@ -37,9 +39,18 @@ benchmarks: benchmarks-build
 benchmarks-run:
 	$(PYTHON) $(BENCHMARK_DIR)/run_suite.py \
 		--interval $(BENCH_INTERVAL) \
+		$(if $(BENCH_LEVELS),--levels $(BENCH_LEVELS)) \
+		$(if $(BENCH_SCHEDS),--scheds $(BENCH_SCHEDS)) \
 		--lavd-bin $(SCX_LAVD_BIN) \
 		--results-root $(BENCH_RESULTS_DIR) \
 		--plots-root $(BENCH_PLOTS_DIR)
+
+compose-plots:
+	$(PYTHON) $(BENCHMARK_DIR)/compose.py \
+		--results-root $(BENCH_RESULTS_DIR) \
+		--plots-root $(BENCH_PLOTS_DIR)
+
+compose: benchmarks compose-plots
 
 scx-lavd-build:
 	$(SCX_CARGO) build --manifest-path $(SCX_DIR)/Cargo.toml --release -p scx_lavd
@@ -56,4 +67,4 @@ $(addsuffix -clean,$(IMPL_DIRS)):
 $(addsuffix -install,$(IMPL_DIRS)):
 	$(MAKE) -C $(patsubst %-install,%,$@) install
 
-.PHONY: all clean install benchmarks benchmarks-build benchmarks-run benchmarks-clean scx-lavd-build schbench-build $(IMPL_DIRS) $(addsuffix -clean,$(IMPL_DIRS)) $(addsuffix -install,$(IMPL_DIRS))
+.PHONY: all clean install benchmarks benchmarks-build benchmarks-run benchmarks-clean compose compose-plots scx-lavd-build schbench-build $(IMPL_DIRS) $(addsuffix -clean,$(IMPL_DIRS)) $(addsuffix -install,$(IMPL_DIRS))
