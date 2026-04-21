@@ -94,6 +94,24 @@ This is the **Vickrey reserve form**: $c_\kappa$ acts as a Myerson reserve price
 - **First-quantum penalty still eliminated.** Both terms scale with $t_{\text{consumed}}$, so short tasks are not overcharged.
 - **$O(1)$ in the hook.** One load from global state, two multiplies, one compare — no queue scan, no per-task externality computation.
 
+### I4.4 Class of Workloads for Which Posted-Price = VCG
+
+The pivot approximation collapses to the full VCG payment iff the cluster-$\kappa$ sub-auction reduces to Myerson's single-item optimal auction (Myerson 1981, Lemma 3). Concretely, the reduction holds on workloads satisfying all of:
+
+1. **Single-item slot.** At a given tick only one core of type $\kappa$ is free, so there is exactly one winner per auction. Multi-slot (several free cores in the same cluster) is handled by the cross-cluster dispatch/steal path; within one cluster the auction slice is one-slot.
+2. **Regular distribution of $\phi_\kappa$.** The induced distribution of $\phi_\kappa(\theta_i)$ has non-decreasing virtual valuation $\varphi(v)$, equivalently the monotone hazard rate condition $\lambda_l(v) = f(v|l) / (1 - F(v|l))$ non-decreasing in $v$ (§5.3). Standard service-class distributions (exponential, Weibull with shape $\geq 1$, truncated normal, uniform) all satisfy this.
+3. **Stationarity on the estimator horizon.** The arrival process is stationary over timescales longer than the $\alpha = 1/16$ EWMA (≈ 16 enqueues), so $\varphi_{\text{hi},\kappa}$ tracks the second-order statistic rather than a transient.
+4. **Class-uniform budget.** All competing tasks at the tick share the same class $\kappa_i$ (§8.4), so $B_i$ is a constant of the sub-auction and the budget-clipping step does not differentiate reports — IC then follows from class-local IC (§8.4 Proposition).
+
+Under (1)–(4), $\varphi_{\text{hi},\kappa}$ equals the second-price benchmark in expectation, posted-price $p_i$ equals the VCG-pivot in expectation, and the mechanism is incentive-compatible on the class.
+
+**Failure modes** (where posted-price ≠ VCG strictly):
+- Burst workloads with heavy-tailed $v_i$ violate (2); $\varphi_{\text{hi}}$ lags the true second-stat during spikes. Regret scales with tail weight.
+- Mixed-class contention violates (4); the cross-class gap of §8.4 adds to the posted-price/VCG gap.
+- Highly non-stationary arrivals (burst → idle → burst) violate (3); the climb-fast/decay-slow rule bounds the overcharge but not undercharge immediately after a burst ends.
+
+These are the targets of the empirical deviation measurement (`tasks/posted_prices_vcg.md` subtask 1).
+
 ---
 
 ## I5. Wake-Latency Boost (VCG Budget ↔ EEVDF Deadline Link)
