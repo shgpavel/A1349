@@ -113,6 +113,14 @@ struct auction_ctx {
 	 */
 	u64 dsq_phi_hi_p;
 	u64 dsq_phi_hi_e;
+	/*
+	 * Precomputed fixed-point σ·cost_e in Q20 format:
+	 *   cost_e_sigma_q20 = (cost_e * max_cap << 20) / min_cap
+	 * Lets compute_phi avoid per-call 64-bit divide:
+	 *   cost_e_ns = cost_e_sigma_q20 * len_est_ns >> 20
+	 * Userspace refreshes on capacity/cost change.
+	 */
+	u64 cost_e_sigma_q20;
 };
 
 struct {
@@ -129,6 +137,19 @@ struct {
 	__uint(key_size, sizeof(u32));
 	__uint(value_size, sizeof(u32));
 } cpu_capacity SEC(".maps");
+
+/*
+ * Per-CPU P/E classification, precomputed in userspace at refresh time.
+ *   1 = P-core (cap ≥ 90% of max_cap), 0 = E-core.
+ * Replaces the multiply-compare in cpu_is_p_type() on every call.
+ * Single byte load in hot paths (select_cpu, enqueue, dispatch, stopping).
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 512);
+	__uint(key_size, sizeof(u32));
+	__uint(value_size, sizeof(u8));
+} cpu_is_p SEC(".maps");
 
 /*
  * Per-task auction state:
@@ -183,14 +204,17 @@ get_cpu_cap(u32 cpu)
 	return CAPACITY_SCALE;
 }
 
-/* Returns true if this CPU is a P-core (high-capacity cluster). */
+/*
+ * Returns true if this CPU is a P-core (high-capacity cluster).
+ * Reads the precomputed cpu_is_p bitmap populated by userspace —
+ * replaces a multiply+compare with a single byte load.
+ * max_cap parameter kept for callers that pass it; unused here.
+ */
 static __always_inline bool
 cpu_is_p_type(u32 cpu, u32 max_cap)
 {
-	u32 cap = get_cpu_cap(cpu);
-	if (!max_cap)
-		max_cap = CAPACITY_SCALE;
-	return (u64)cap * 100 >= (u64)max_cap * P_CAP_PCT;
+	u8 *flag = bpf_map_lookup_elem(&cpu_is_p, &cpu);
+	return flag && *flag;
 }
 
 static __always_inline u64
@@ -288,15 +312,27 @@ static __always_inline void
 compute_phi(u32 weight, u64 len_est_ns,
 	    u32 max_cap, u32 min_cap,
 	    u32 cost_p, u32 cost_e,
+	    u64 cost_e_sigma_q20,
 	    s64 *phi_p_out, s64 *phi_e_out)
 {
 	u64 slice = SCX_SLICE_DFL ?: 5000000;
-	u32 mc    = min_cap ? min_cap : CAPACITY_SCALE;
 
 	u64 w_slice    = (u64)weight * slice;
 	u64 cost_p_ns  = (u64)cost_p * len_est_ns;
-	/* C_E * len_ns * σ = C_E * len_ns * max_cap / min_cap */
-	u64 cost_e_ns  = (u64)cost_e * len_est_ns * (u64)max_cap / (u64)mc;
+	/*
+	 * C_E * len_ns * σ computed via precomputed fixed-point:
+	 *   cost_e_sigma_q20 = (cost_e * max_cap << 20) / min_cap
+	 * → cost_e_ns = cost_e_sigma_q20 * len_est_ns >> 20
+	 * Fallback path (userspace didn't populate) keeps the original
+	 * multiply-divide for correctness.
+	 */
+	u64 cost_e_ns;
+	if (cost_e_sigma_q20) {
+		cost_e_ns = (cost_e_sigma_q20 * len_est_ns) >> 20;
+	} else {
+		u32 mc = min_cap ? min_cap : CAPACITY_SCALE;
+		cost_e_ns = (u64)cost_e * len_est_ns * (u64)max_cap / (u64)mc;
+	}
 
 	*phi_p_out = (s64)w_slice - (s64)cost_p_ns;
 	*phi_e_out = (s64)w_slice - (s64)cost_e_ns;
@@ -335,50 +371,26 @@ BPF_STRUCT_OPS(auction_select_cpu,
 	       s32                 prev_cpu,
 	       u64                 wake_flags)
 {
-	struct auction_ctx     *gdata = get_ctx();
-	struct auction_task_ctx *tctx = get_task_ctx(p, false);
 	bool is_idle = false;
 	s32 cpu;
-	u32 max_cap;
-	bool want_p;
-	u64 desired_dsq, cpu_dsq;
 
 	cpu = scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, &is_idle);
 
 	/*
 	 * If dfl didn't find an idle CPU, enqueue path will handle routing.
 	 * Skip cluster-preference work; there's nothing to improve.
-	 */
-	if (!(cpu >= 0 && is_idle) || !gdata)
-		return cpu;
-
-	max_cap     = gdata->max_capacity ?: CAPACITY_SCALE;
-	want_p      = (tctx && tctx->last_stop_ns) ? tctx->on_p_type : true;
-	desired_dsq = want_p ? AUCTION_DSQ_P : AUCTION_DSQ_E;
-	cpu_dsq     = dsq_for_cpu((u32)cpu, max_cap);
-
-	/*
-	 * Soft cluster preference.  dfl returned an idle CPU; if the cluster
-	 * matches the task's auction-preferred DSQ, use it as-is.  If it's
-	 * the wrong cluster (e.g. bursty P-class task landed on idle E),
-	 * probe once for an idle CPU in the desired cluster.  If found, swap.
-	 * If not, keep dfl's idle hit — work conservation beats spinning on
-	 * a busy same-cluster CPU.
 	 *
-	 * Differs from the pre-fix policy: that one fell through to a
-	 * non-idle return when the second probe missed, leaving the idle
-	 * CPU unkicked.  We always dispatch to LOCAL on an idle CPU.
+	 * Previously this path did a second scx_bpf_pick_idle_cpu() scan
+	 * whenever dfl's idle hit was in the "wrong" cluster, then discarded
+	 * it if the alt was also wrong cluster — consuming an idle bit for
+	 * no benefit.  Benchmarks showed work conservation (use dfl's idle
+	 * CPU regardless of cluster) beats spending a scan per wakeup.
+	 * Cluster preference is still enforced at enqueue-time routing for
+	 * non-idle wakeups.
 	 */
-	if (desired_dsq != cpu_dsq) {
-		s32 alt = scx_bpf_pick_idle_cpu(p->cpus_ptr, 0);
-		if (alt >= 0 && dsq_for_cpu((u32)alt, max_cap) == desired_dsq)
-			cpu = alt;
-		/* else: second pick consumed an idle bit in a cluster we
-		 * don't want (or nothing), and that CPU will get stolen on
-		 * its next dispatch() — acceptable cost. */
-	}
+	if (cpu >= 0 && is_idle)
+		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, 0);
 
-	scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, 0);
 	return cpu;
 }
 
@@ -455,7 +467,8 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	s64 phi_p, phi_e;
 
 	compute_phi(weight, en_len_est, max_cap, en_min_cap,
-		    en_cost_p, en_cost_e, &phi_p, &phi_e);
+		    en_cost_p, en_cost_e, gdata->cost_e_sigma_q20,
+		    &phi_p, &phi_e);
 
 	/*
 	 * Budget check: exhausted tasks → AUCTION_DSQ_STARVED.

@@ -44,6 +44,8 @@ struct auction_ctx {
 	/* VCG-pivot φ_hi_κ estimators (see BPF §I4). */
 	__u64 dsq_phi_hi_p;
 	__u64 dsq_phi_hi_e;
+	/* Precomputed fixed-point σ·cost_e in Q20 (see BPF). */
+	__u64 cost_e_sigma_q20;
 };
 
 #define P_CAP_PCT 90
@@ -64,6 +66,7 @@ refresh_cpu_capacities(struct scx_auction *skel,
 {
 	int cap_fd  = bpf_map__fd(skel->maps.cpu_capacity);
 	int gmap_fd = bpf_map__fd(skel->maps.global_data);
+	int isp_fd  = bpf_map__fd(skel->maps.cpu_is_p);
 	__u32 max_cap = 0;
 	__u32 min_cap = 0;
 	bool changed  = false;
@@ -105,16 +108,24 @@ refresh_cpu_capacities(struct scx_auction *skel,
 	/* Classify each CPU into P / E cluster (cap ≥ 90% max → P). */
 	__u32 p_cc = 0, e_cc = 0;
 	for (int cpu = 0; cpu < ncpu; cpu++) {
-		if ((__u64)caps[cpu] * 100 >= (__u64)max_cap * P_CAP_PCT)
-			p_cc++;
-		else
-			e_cc++;
+		__u8 is_p = ((__u64)caps[cpu] * 100 >= (__u64)max_cap * P_CAP_PCT);
+		__u32 key = (__u32)cpu;
+		__u8 old_flag = 0xff;
+		if (bpf_map_lookup_elem(isp_fd, &key, &old_flag) != 0 ||
+		    old_flag != is_p) {
+			bpf_map_update_elem(isp_fd, &key, &is_p, BPF_ANY);
+			changed = true;
+		}
+		if (is_p) p_cc++; else e_cc++;
 	}
 
 	if (!max_cap)
 		max_cap = 1024;
 	if (!min_cap)
 		min_cap = max_cap;
+
+	/* Precompute fixed-point σ·cost_e in Q20 for BPF hot path. */
+	__u64 cost_e_sigma_q20 = ((__u64)cost_e * max_cap << 20) / min_cap;
 
 	/* Update global_data. */
 	__u32 gkey = 0;
@@ -124,13 +135,15 @@ refresh_cpu_capacities(struct scx_auction *skel,
 
 	if (ctx.max_capacity != max_cap || ctx.min_capacity != min_cap ||
 	    ctx.cost_p != cost_p || ctx.cost_e != cost_e ||
-	    ctx.p_core_count != p_cc || ctx.e_core_count != e_cc) {
-		ctx.max_capacity = max_cap;
-		ctx.min_capacity = min_cap;
-		ctx.cost_p       = cost_p;
-		ctx.cost_e       = cost_e;
-		ctx.p_core_count = p_cc;
-		ctx.e_core_count = e_cc;
+	    ctx.p_core_count != p_cc || ctx.e_core_count != e_cc ||
+	    ctx.cost_e_sigma_q20 != cost_e_sigma_q20) {
+		ctx.max_capacity     = max_cap;
+		ctx.min_capacity     = min_cap;
+		ctx.cost_p           = cost_p;
+		ctx.cost_e           = cost_e;
+		ctx.p_core_count     = p_cc;
+		ctx.e_core_count     = e_cc;
+		ctx.cost_e_sigma_q20 = cost_e_sigma_q20;
 		bpf_map_update_elem(gmap_fd, &gkey, &ctx, BPF_ANY);
 		changed = true;
 	}
