@@ -340,6 +340,24 @@ If the VCG payment exceeds the remaining budget, the task **does not receive a c
 
 $$\tilde{a}^t = \arg\max_{a} \sum_{i: p_i \leq B_i^t} \left[a_{i,P} \cdot \phi_P(\theta_i) + a_{i,E} \cdot \phi_E(\theta_i)\right] + \delta \cdot \mathbb{E}[W(s^{t+1})]$$
 
+### 8.4 Budget-Feasibility vs. Incentive Compatibility
+
+Hard budget constraints are known to break strict VCG-IC: an agent with $p_i^{\text{VCG}} > B_i$ has incentive to misreport in order to enter the feasible set (Dobzinski, Lavi, Nisan, *Multi-unit Auctions with Budget Limits*, 2008). Below we state precisely how §8.3 is reconciled with §8.1.
+
+**Setup.** Each task has a public class $\kappa_i \in \{\text{RT}, \text{int}, \text{batch}, \text{bg}\}$, fixed by the OS-level priority of the process (`policy`/`nice`) before the task enters the mechanism. The budget is a deterministic function of the class: $B_i = B(\kappa_i)$. The class is **not** part of the private type $\theta_i = (v_i, l_i)$ and cannot be strategically reported.
+
+**Proposition (class-local IC).** Fix any class $\kappa$ with budget $B(\kappa)$. Restrict the mechanism to the sub-type space $(v_i, l_i) \in \Theta_\kappa$. Then:
+
+1. The allocation rule $\alpha_i^\kappa$ satisfies the three Sano conditions of §8.1 on $\Theta_\kappa$.
+2. The payment $p_i^*$ is clipped by $B(\kappa)$, a constant independent of the agent's report.
+3. Therefore reporting $(v_i, l_i)$ truthfully is a dominant strategy within class $\kappa$.
+
+**Sketch.** Under point (2), rejection by budget ($p_i > B(\kappa) \Rightarrow \tilde{a}_{i,\kappa} = 0$) depends only on $(v_i, l_i)$ through $p_i^*(\theta_i)$, not on the agent's message directly. Truthful $(v_i, l_i)$ minimises the set of reports that both win the allocation and stay within $B(\kappa)$, so misreporting cannot enlarge the feasible-and-winning region. The Sano monotonicity (§8.1) then gives IC on $\Theta_\kappa$ exactly as in §8.1.
+
+**Cross-class.** Between classes the mechanism is only approximately IC: an agent could in principle claim a higher-budget class, but (a) the class is enforced by the kernel outside the mechanism's type channel, and (b) §8.3 rejects budget-exceeding tasks by **allocation**, not by repricing, so there is no Myerson-style payment twist. The residual incentive gap is bounded by the max class-budget ratio and vanishes when the task is not budget-constrained at the VCG price.
+
+**Limitation.** The result is **IC within class**, not strict VCG-IC. For predзащита-level claims use this formulation; the slide deck (§Extra) states it explicitly.
+
 ---
 
 ## 9. Example: Binary Core Types, Single Free Core

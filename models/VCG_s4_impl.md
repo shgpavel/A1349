@@ -56,13 +56,43 @@ where $\kappa$ is the core type the task would otherwise be routed to, and $D_{\
 
 ---
 
-## I4. Proportional VCG Payment
+## I4. VCG-Pivot Payment (Vickrey Reserve Form)
 
-Theoretical payment: $p_i = c_\kappa \cdot \lfloor l_i / s \rceil$ (in quanta). The implementation uses a proportional payment:
+Theoretical pivot (§6.2):
 
-$$p_i = c_\kappa \cdot \frac{t_{\text{consumed}}}{s}$$
+$$p_i^t = W_{-i}(s^t) - \bigl[W(s^t) - \phi_\kappa(\theta_i)\bigr]$$
 
-where $t_{\text{consumed}} = s - \mathtt{p->scx.slice}$ is the actually used time in the current quantum. This eliminates the "first-quantum penalty" where a short task (1 ns) paid as much as a task using a full quantum (5 ms).
+In the single-free-core slot (§9), this collapses to
+
+$$p_i = \phi_\kappa(\theta_j) + (\delta^{m_\kappa(l_j)} - \delta^{m_\kappa(l_i)}) \bar{W}_\kappa,$$
+
+i.e. the winning task pays approximately the effective value of the *second*-best competing type. Computing $W_{-i}$ exactly in a BPF hook is infeasible; the implementation carries an $O(1)$ local approximation.
+
+### I4.1 Per-Cluster $\varphi_{\text{hi}}$ Estimator
+
+For each cluster $\kappa \in \{P, E\}$ a global field $\varphi_{\text{hi},\kappa}$ tracks the running positive maximum of $\phi_\kappa$ observed at enqueue-time. Update on every non-starved enqueue to DSQ $\kappa$:
+
+$$\varphi_{\text{hi},\kappa} \leftarrow \begin{cases} \phi_\kappa(\theta_i) & \text{if } \phi_\kappa(\theta_i) > \varphi_{\text{hi},\kappa} \\ \tfrac{15\,\varphi_{\text{hi},\kappa} + \max(0, \phi_\kappa(\theta_i))}{16} & \text{otherwise (EWMA, } \alpha = 1/16\text{)} \end{cases}$$
+
+Climb-fast / decay-slow: a new high is picked up instantly, but absent reinforcement the estimator relaxes toward zero so a stale burst does not overcharge later tasks. Under stationary workloads this converges to (a smoothed estimate of) the maximum competing $\phi$ — the local statistic that $W_{-i}$ reduces to under Myerson's regular-distribution equivalence for single-item auctions.
+
+### I4.2 Payment Formula
+
+At `auction_stopping`, in place of the linear posted price:
+
+$$p_i = \max\bigl(c_\kappa \cdot \tfrac{t_{\text{consumed}}}{s},\;\; \varphi_{\text{hi},\kappa} \cdot \tfrac{t_{\text{consumed}}}{s^2}\bigr)$$
+
+where $s = \mathtt{SCX\_SLICE\_DFL}$ (5 ms) and $t_{\text{consumed}} = s - \mathtt{p->scx.slice}$. The two terms normalise to the same budget units: $\varphi_{\text{hi},\kappa}$ carries units of weight·ns, so dividing by $s^2$ rescales to per-ns weight, then $\cdot\,t_{\text{consumed}}$ yields weight-equivalent payment per slice — the same order as $c_\kappa \cdot t_{\text{consumed}}/s$.
+
+This is the **Vickrey reserve form**: $c_\kappa$ acts as a Myerson reserve price (posted cost of occupying cluster $\kappa$), and the pivot term lifts the payment toward the externality whenever competing tasks are queued.
+
+### I4.3 Properties
+
+- **IR preserved.** The cost-based floor guarantees $p_i \geq c_\kappa \cdot t_{\text{consumed}}/s$, matching the pre-pivot posted-price; a task never pays less than it did before.
+- **Cold-queue degeneracy.** When cluster $\kappa$ is idle or has only negative-$\phi$ tasks, $\varphi_{\text{hi},\kappa} \to 0$ and $p_i$ reduces to the linear posted price — the previous behaviour is the zero-pivot limit of the new formula.
+- **IC in the limit.** Under stationary arrivals and monotone hazard rate (Sano Thm 1 preconditions, §8.1), $\varphi_{\text{hi},\kappa}$ converges to the top-order statistic of $\phi_\kappa$ over the stationary type distribution, so $p_i$ approaches the second-price/pivot regime and the mechanism recovers incentive compatibility asymptotically.
+- **First-quantum penalty still eliminated.** Both terms scale with $t_{\text{consumed}}$, so short tasks are not overcharged.
+- **$O(1)$ in the hook.** One load from global state, two multiplies, one compare — no queue scan, no per-task externality computation.
 
 ---
 
@@ -165,6 +195,7 @@ Quick reference from source-code artefacts back to the abstract model.
 | `compute_phi()` | $\phi_P, \phi_E$ — §5.2, §I1 |
 | `auction_enqueue()` routing | allocation $a^t$ — §2.2, §I2, §I7 |
 | `scx_bpf_dsq_insert_vtime(... vd ...)` | EEVDF deadline ordering ≈ argmax selection — §5.1 |
-| `auction_stopping()` budget update | VCG payment $p_i^t$ — §6.2, §I4 |
+| `auction_stopping()` budget update | VCG-pivot payment $p_i^t$ — §6.2, §I4 |
+| `gdata->dsq_phi_hi_p/e` | $\varphi_{\text{hi},\kappa}$ pivot estimator — §I4.1 |
 | `AUCTION_DSQ_STARVED` | budget-feasibility rejection — §8.3, §I3 |
 | `auction_running()` / `auction_stopping()` vtime | capacity-weighted virtual time — §I1 |

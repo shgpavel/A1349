@@ -41,6 +41,9 @@ struct auction_ctx {
 	__u32 cost_e;
 	__u32 p_core_count;
 	__u32 e_core_count;
+	/* VCG-pivot φ_hi_κ estimators (see BPF §I4). */
+	__u64 dsq_phi_hi_p;
+	__u64 dsq_phi_hi_e;
 };
 
 #define P_CAP_PCT 90

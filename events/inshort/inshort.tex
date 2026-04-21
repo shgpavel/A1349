@@ -1,0 +1,1631 @@
+%!TeX program = pdflatex
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[english,russian]{babel}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{tcolorbox}
+\usepackage{graphicx}
+\usepackage{parskip}
+\usepackage{textcomp}
+
+\DeclareUnicodeCharacter{2192}{\ensuremath{\rightarrow}}
+\DeclareUnicodeCharacter{2190}{\ensuremath{\leftarrow}}
+\DeclareUnicodeCharacter{2194}{\ensuremath{\leftrightarrow}}
+\DeclareUnicodeCharacter{21D2}{\ensuremath{\Rightarrow}}
+\DeclareUnicodeCharacter{2248}{\ensuremath{\approx}}
+\DeclareUnicodeCharacter{00D7}{\ensuremath{\times}}
+\DeclareUnicodeCharacter{00B7}{\ensuremath{\cdot}}
+\DeclareUnicodeCharacter{2264}{\ensuremath{\leq}}
+\DeclareUnicodeCharacter{2265}{\ensuremath{\geq}}
+\DeclareUnicodeCharacter{2260}{\ensuremath{\neq}}
+\DeclareUnicodeCharacter{2208}{\ensuremath{\in}}
+\DeclareUnicodeCharacter{2286}{\ensuremath{\subseteq}}
+\DeclareUnicodeCharacter{221E}{\ensuremath{\infty}}
+\DeclareUnicodeCharacter{2211}{\ensuremath{\sum}}
+\DeclareUnicodeCharacter{03B1}{\ensuremath{\alpha}}
+\DeclareUnicodeCharacter{03B2}{\ensuremath{\beta}}
+\DeclareUnicodeCharacter{03B3}{\ensuremath{\gamma}}
+\DeclareUnicodeCharacter{03B4}{\ensuremath{\delta}}
+\DeclareUnicodeCharacter{03B5}{\ensuremath{\varepsilon}}
+\DeclareUnicodeCharacter{03BB}{\ensuremath{\lambda}}
+\DeclareUnicodeCharacter{03BC}{\ensuremath{\mu}}
+\DeclareUnicodeCharacter{03C0}{\ensuremath{\pi}}
+\DeclareUnicodeCharacter{03C1}{\ensuremath{\rho}}
+\DeclareUnicodeCharacter{03C3}{\ensuremath{\sigma}}
+\DeclareUnicodeCharacter{03C4}{\ensuremath{\tau}}
+\DeclareUnicodeCharacter{03C6}{\ensuremath{\varphi}}
+\DeclareUnicodeCharacter{03C8}{\ensuremath{\psi}}
+\DeclareUnicodeCharacter{03C9}{\ensuremath{\omega}}
+\DeclareUnicodeCharacter{0398}{\ensuremath{\Theta}}
+\DeclareUnicodeCharacter{03A8}{\ensuremath{\Psi}}
+
+\geometry{margin=2.2cm}
+
+\definecolor{MainRed}{RGB}{175,44,34}
+\definecolor{DarkRed}{RGB}{127,37,2}
+\definecolor{BoxGray}{RGB}{242,242,242}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=DarkRed,
+  urlcolor=DarkRed
+}
+
+\tcbuselibrary{skins,breakable}
+\newtcolorbox{why}[1]{
+  enhanced,breakable,
+  colback=BoxGray,colframe=MainRed,coltitle=white,
+  colbacktitle=MainRed,
+  title={#1},arc=2pt,boxrule=0.4pt,
+  left=3mm,right=3mm,top=1.5mm,bottom=1.5mm,
+  fonttitle=\bfseries\small
+}
+
+\newtcolorbox{ask}[1]{
+  enhanced,breakable,
+  colback=white,colframe=DarkRed,
+  arc=2pt,boxrule=0.6pt,
+  left=3mm,right=3mm,top=1.5mm,bottom=1.5mm,
+  title={#1},coltitle=white,colbacktitle=DarkRed,
+  fonttitle=\bfseries\small
+}
+
+\title{\textbf{Учебный конспект к защите}\\[0.3em]
+{\large Математическое моделирование и реализация\\
+планировщика для гетерогенных CPU (VCG / scx\_auction)}\\[0.6em]
+{\normalsize\color{MainRed}s4 модель $+$ реализация $+$ презентация 21.04}}
+\author{Для: Шаго П. Е. (докладчик)}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Как читать этот документ}
+
+Документ — «шпаргалка докладчика». Для каждой формулы и понятия из
+\textbf{s4 модели} (\texttt{models/VCG\_s4.md}), \textbf{реализации}
+(\texttt{models/VCG\_s4\_impl.md}) и \textbf{презентации 21.04}
+(\texttt{events/2104/main.tex}) дано:
+
+\begin{itemize}
+  \item что это формально;
+  \item почему она выглядит именно так (экономический и MDP-смысл);
+  \item откуда взялась (ссылка на источник — Leon \& Etesami, Sano,
+    Myerson, EEVDF);
+  \item как это отображается в коде BPF-планировщика.
+\end{itemize}
+
+\begin{why}[Главная идея всей работы в одном абзаце]
+Гетерогенный CPU (P-ядра + E-ядра) — это рынок. Кванты времени —
+скоропортящийся товар (не использовал — потерял). Задачи — агенты с
+частным типом $\theta_i=(v_i,l_i)$: ценностью выполнения и длиной.
+Планировщик — аукционист. Каждый квант он решает \emph{кому} дать ядро
+и \emph{какого типа} (P или E), максимизируя социальное благосостояние.
+Плата с победителя — \textbf{VCG} (Vickrey--Clarke--Groves): задача
+платит экстерналию, которую создаёт для остальных. Это делает
+правдивую ставку доминирующей стратегией.
+\end{why}
+
+\section{Часть I. Модель системы (s4, §1)}
+
+\subsection{Аппаратная платформа (§1.1)}
+
+Два класса ядер:
+\[
+\mathcal{P} = \{P_1,\ldots,P_{K_P}\},\quad
+\mathcal{E} = \{E_1,\ldots,E_{K_E}\},\quad
+K = K_P + K_E.
+\]
+Время дискретно: $t=1,2,3,\ldots$ — тики планировщика (кванты).
+На каждом шаге каждое ядро — \textbf{скоропортящийся товар}: не
+использованный квант теряется.
+
+\begin{why}[Почему «скоропортящийся товар»]
+Это не метафора — это техническая реальность. CPU в состоянии idle
+этот тик просто простаивает; welfare-потеря строго положительна.
+Из этого следует важное свойство реализации (§I6): \emph{безусловное
+work-stealing между кластерами} — лучше пустить задачу E на P-ядро, чем
+оставить P пустым.
+\end{why}
+
+\subsection{Задачи-агенты (§1.2)}
+
+Множество активных задач $\mathcal{N}^t$. Новые задачи приходят
+стохастически: $N_t$ — i.i.d. случайная величина.
+
+Приватный тип задачи $i$:
+\[
+\theta_i = (v_i, l_i) \in \Theta,\qquad
+v_i \in [0,\bar V],\quad l_i \in \{1,\ldots,L\}.
+\]
+$v_i$ — ценность \emph{полного} выполнения, $l_i$ — длина в квантах
+P-ядра.
+
+ISA (набор инструкций) общий — любая задача исполнима на любом ядре.
+Разница P vs E только в стоимости кванта и скорости. \textbf{Выбор
+типа ядра — решение аукциона, не задачи.}
+
+Ценность $v_i$ начисляется только при полном выполнении за $l_i$
+подряд идущих квантов (условие «full completion» из Sano 2023). На
+E-ядре длина масштабируется:
+\[
+l_i^{(E)} = \lceil l_i \cdot \sigma \rceil,\qquad
+\sigma = \eta_P/\eta_E > 1.
+\]
+Здесь $\eta_\kappa$ — производительность ядра типа $\kappa$.
+
+\begin{why}[Зачем «full completion»]
+Без этого условия задача могла бы «срывать куш» после первого же
+кванта. «Full completion» делает динамику нетривиальной: контракт
+на $m$ квантов — это настоящий контракт, и агент несёт риск его
+невыполнения (→ неотрицательная полезность требует механизма, а не
+просто жадного распределения).
+\end{why}
+
+\subsection{Бюджеты (§1.3)}
+
+\paragraph{Что такое бюджет.}
+$B_i>0$ — \emph{покупательная способность} задачи $i$ в валюте
+аукциона. Не «квота времени», не «приоритет в очереди», а именно
+\emph{сумма, которую задача может потратить на платежи VCG}. Аналог
+виртуальных денег или эфирного газа.
+
+\paragraph{Зачем он нужен.}
+Классический VCG — \emph{quasi-linear}: задача платит столько, сколько
+требует pivot-правило, и у неё \emph{всегда} есть чем платить.
+В операционной системе это опасно — один злой процесс может навязать
+себе высокий $v_i$ и перекрыть всю welfare. \textbf{Бюджет = hard
+limit на экстернальности}. Это превращает VCG из одноразового
+аукциона в \emph{повторяющийся} с ограничением ресурса. Без $B_i$
+механизм не был бы DoS-устойчив.
+
+\paragraph{Начальное значение по классу обслуживания.}
+\begin{center}\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+Класс & Обозн. & Типичный масштаб & Смысл\\
+\midrule
+Real-time   & $B_{RT}$    & $B_{RT}\gg 1$   & Гарантированное исполнение, почти неограничен\\
+Interactive & $B_{int}$   & $\sim B_i^{\max}$ & Высокий приоритет (GUI, IO-bound)\\
+Batch       & $B_{batch}$ & $< B_i^{\max}$  & Низкий приоритет (компиляция, фон)\\
+Background  & $B_{bg}$    & $\approx 0$     & Только при наличии свободного ресурса\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+В реализации (§I8) классы отображаются через \texttt{p->scx.weight}
+(Linux nice-value): $B_i^{\max}=w_i\cdot\mathtt{BUDGET\_MUL}$,
+\texttt{BUDGET\_MUL}=2000. То есть бюджет \emph{линейно} зависит от
+nice: nice 0 ($w=1024$) даёт $B^{\max}\approx 2\cdot 10^6$,
+nice $-20$ ($w=88761$) даёт $B^{\max}\approx 1.8\cdot 10^8$.
+
+\paragraph{Бюджетное ограничение.}
+\[
+\sum_{s=t}^{t+m_i-1} p_i^s \;\leq\; B_i.
+\]
+Словами: \emph{сумма всех платежей за всё время контракта задачи
+$i$ не превышает её начального бюджета}. Если в какой-то момент
+$t'$ остаток $b_i^{t'}$ меньше требуемого $p_i^{t'}$ — задача не
+получает ядро в этом кванте (§8.3).
+
+\begin{why}[Почему \emph{сумма}, а не на каждом квантe]
+Контракт $m_i$ квантов длинный. Платежи $p_i^s$ per-quantum могут
+колебаться в зависимости от загрузки системы (второй конкурент
+сильнее/слабее). Ограничение на \emph{сумму} означает: задача
+платит «общую смету», без жёсткого потолка на отдельный платёж.
+Это даёт гибкость — в пиковый момент можно заплатить больше, если
+есть запас; в тихий момент — меньше. Аналог: кредитка с лимитом,
+а не дневная норма.
+\end{why}
+
+\paragraph{Динамика бюджета (связь с §2.3).}
+
+Бюджет — компонент состояния $\mathbf{b}^t$. Обновляется каждый квант
+по правилу:
+\[
+\boxed{\;b_i^{t+1} \;=\; \min\!\bigl(B_i^{\max},\;\; b_i^t \;-\; p_i^t \;+\; \Delta_i^t\bigr).\;}
+\]
+Три компоненты по порядку важности:
+
+\textbf{(A) $-p_i^t$ — трата на выигранный квант.}
+Задача заплатила механизму VCG-платёж за этот тик. Если
+$a_i^t=(0,0)$ (не получила ядро) — $p_i^t=0$, баланс не падает. Если
+получила — $p_i^t>0$ (в реализации §I4 минимум $c_\kappa\cdot
+t_{\text{consumed}}/s$, то есть \emph{пол} = posted-price; может быть
+больше, если есть pivot через $\varphi_{\text{hi}}$).
+
+\textbf{(B) $+\Delta_i^t$ — восстановление за простой.}
+\[
+\Delta_i^t \;=\; \frac{\Delta t_{\text{idle}}\cdot v_i}{D_{\text{rep}}},\qquad
+\Delta t_{\text{idle}} = \text{нс, проведённые в состоянии sleep}.
+\]
+Рабочий пример: задача спит 10 мс ($10^7$ нс), nice 0 ($v_i=1024$),
+$D_{\text{rep}}=5\cdot 10^6$ нс.
+Тогда $\Delta = 10^7\cdot 1024/(5\cdot 10^6) = 2048$.
+
+\textbf{(C) $\min(B_i^{\max},\cdot)$ — потолок.}
+Бюджет не растёт выше начального $B_i^{\max}=w_i\cdot 2000$.
+Иначе долго спящий процесс накопил бы «бесконечный кредит» и стал
+бы neulimitedly приоритетным при пробуждении. Потолок — якорь.
+
+\paragraph{Хронологическая последовательность внутри одного кванта.}
+\begin{enumerate}[leftmargin=*]
+  \item Наблюдение $s^t$: текущий $b_i^t$ известен.
+  \item Механизм решает $a^t$. При этом проверяется бюджет:
+    если $p_i^t$ (оценка) $> b_i^t$, задача \emph{исключается} из
+    допустимых (§8.3).
+  \item Выигравшая задача исполняется на ядре, тратит слайс.
+  \item На \texttt{auction\_stopping} считается фактический
+    $p_i^t = \max(c_\kappa t_c/s,\; \varphi_{\text{hi}} t_c/s^2)$
+    (§I4.2), списывается: $b_i \mathrel{-}= p_i^t$.
+  \item Если задача уходит в sleep (блокировка на IO) — при
+    следующем wake считается $\Delta t_{\text{idle}}$ и начисляется
+    $\Delta_i$.
+  \item Сложение и обрезка потолком → $b_i^{t+1}$.
+\end{enumerate}
+
+\paragraph{Почему это именно такое правило.}
+
+\begin{why}[Почему восстановление $\propto v_i$]
+Без этого высокоприоритетная задача, застрявшая в IO на 50 мс,
+пришла бы к моменту wake с тем же $\Delta$, что и nice-19 batch.
+Пропорциональность $v_i$ сохраняет \emph{классовое различие}: за
+равное время простоя interactive-задача восстанавливает больше,
+чем background. Аналог: процент по вкладу зависит от суммы.
+\end{why}
+
+\begin{why}[Откуда берётся $D_{\text{rep}}=5$ мс]
+\texttt{REPLENISH\_DIV}$=5\cdot 10^6$ нс совпадает с
+\texttt{SCX\_SLICE\_DFL} (дефолтный слайс EEVDF). Смысл: за
+\emph{один слайс простоя} задача $v_i=1024$ получает
+$\Delta\approx 1024$. Это \emph{одна единица посторонней платы}
+порядка $c_\kappa$. Иначе говоря — «за слайс сна зарабатывается
+на покупку слайса выполнения». Баланс tune-нут так, что
+равномерно работающая задача держит $\rho_i\approx 0.5$.
+\end{why}
+
+\begin{why}[Почему списание и пополнение в одном такте]
+Можно было бы — два разных тика. Но тогда появилась бы race:
+задача могла бы «спать» между списанием и следующим пополнением
+и \emph{не получить} заслуженного $\Delta$. Единое обновление
+$b^{t+1}=b^t-p+\Delta$ делает бухгалтерию атомарной — важно для
+BPF, где пересечение хуков по CPU может быть недетерминированным.
+\end{why}
+
+\paragraph{Инварианты.}
+\begin{itemize}
+  \item $0 \leq b_i^t \leq B_i^{\max}$ всегда (левое — из §8.3 запрета
+    win при нехватке, правое — из потолка).
+  \item $\rho_i^t = b_i^t/B_i^{\max} \in [0,1]$, определён всегда.
+  \item Если задача \emph{никогда} не исполнялась — $b_i^t=B_i^{\max}$
+    (новая задача входит с полным кошельком).
+  \item Если задача CPU-hog — $b_i^t$ монотонно убывает до 0
+    (становится STARVED), после чего механизм её демотирует.
+\end{itemize}
+
+\paragraph{Связь со состоянием MDP (§2.1, §2.3).}
+Компонент $\mathbf{b}^t$ — не «внутренняя переменная», а
+\emph{часть состояния}. Значит политика $\pi$ может смотреть на
+бюджеты всех задач и учитывать их в argmax $W$. Именно поэтому
+кандидаты с низким $b_i$ допустимы в space действий, но их
+$\phi_\kappa$ фактически срезается бюджетным ограничением — они
+\emph{не} выигрывают, даже если $v_i$ высок.
+
+В реализации (§I2) это выражается иначе: бюджет используется не
+напрямую в $\phi$, а через $\rho_i$ для \emph{роутинга в DSQ}. Это
+аппроксимация: вместо решения полной задачи с бюджетным
+ограничением — грубое «куда отправить». Равновесие поддерживается
+штрафом STARVED для задач с малым $\rho$.
+
+\paragraph{Роль в роутинге.}
+
+\textbf{Определение сигнала.}
+\[
+\rho_i^t \;=\; \frac{b_i^t}{B_i^{\max}} \;\in\; [0,1].
+\]
+Нормированная покупательная способность. $\rho=1$ — «полный
+кошелёк»; $\rho=0$ — «банкрот». По построению $\rho$ растёт во
+время простоя и падает во время активного исполнения.
+
+\textbf{Почему $\rho$ — поведенческий сигнал.}
+Из формулы $b_i^{t+1}=b_i^t-p_i^t+\Delta_i^t$: знак $\Delta b$
+определяется балансом $-p_i^t + \Delta_i^t$. На большом окне
+времени:
+\[
+\frac{\text{траты на CPU}}{\text{время простоя}} \;\sim\;
+\frac{p_i}{\Delta_i} \;\sim\; \frac{\text{active}}{\text{idle}}\cdot\text{const}.
+\]
+\textbf{Значит:} $\rho_i$ — прокси для обратного отношения
+\texttt{active/idle}. Высокий $\rho$ $\Leftrightarrow$ много idle $\Leftrightarrow$
+\textbf{interactive}. Низкий $\rho$ $\Leftrightarrow$ много active $\Leftrightarrow$
+\textbf{CPU-bound}. Это получается \emph{само собой} из
+бухгалтерии — никто явно не классифицировал процесс.
+
+\textbf{Правила роутинга (реализация, §I2 с гистерезисом).}
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Условие & DSQ & Интерпретация\\
+\midrule
+$\rho_i \geq \rho_H = 0.70$               & \texttt{AUCTION\_DSQ\_P}       & bursty, интерактивная, latency-критична\\
+$\rho_i < \rho_L = 0.30$                  & \texttt{AUCTION\_DSQ\_E}       & CPU-bound, устойчиво расходует\\
+$\rho_L \leq \rho_i < \rho_H$ (deadband)  & \emph{как было} (sticky)       & неопределённость — не двигаем\\
+$\rho_i < 1/\mathtt{STARVE\_FRAC}=0.10$   & \texttt{AUCTION\_DSQ\_STARVED} & почти банкрот, штрафуется\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{why}[Почему именно 30/70, а не 50/50]
+Один порог 50\% даёт \emph{flapping}: задача около середины при
+мелких колебаниях $\rho$ скачет P$\leftrightarrow$E, вызывая
+миграции и потерю кэша. Двусторонний порог 30/70 с deadband
+[30,\,70] реализует \emph{threshold policy with inaction
+region} (Sano, контрактные аукционы с одним параметром). В зоне
+deadband решение «не менять» — дешевле, чем угадывать.
+\end{why}
+
+\begin{why}[Почему 10\% — порог STARVED]
+\texttt{STARVE\_FRAC}$=10$ означает «при $b\leq B^{\max}/10$ задача
+считается банкротом». Это ниже $\rho_L$ — то есть сначала задача
+переходит в E-кластер (проще и дешевле), и только если продолжает
+тратить — падает в STARVED. Двухстадийная защита от DoS.
+\end{why}
+
+\textbf{Что происходит в STARVED.}
+Задача не отбрасывается — она \emph{демотируется}: виртуальный
+дедлайн сдвигается на $\max(0,-\phi_\kappa)/D_{\text{starve}}$
+(§I3), то есть её выполнят \emph{после} нормальных задач. Это
+аналог «задержки в очереди», а не kill. Пока задача ждёт — её
+бюджет пополняется через idle-$\Delta$, и она постепенно
+возвращается к $\rho\geq 0.10$.
+
+\paragraph{Бюджет как \emph{двойной} объект.}
+Один и тот же $B_i$ обслуживает \emph{две разные} задачи механизма,
+без дополнительных структур:
+
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Задача & Как используется $B$ & Где в теории\\
+\midrule
+Защита от DoS        & жёсткое огр.\ $\sum p \leq B$   & §1.3, §8.3\\
+Классификация задачи & $\rho$-роутинг в DSQ           & §I2 реализации\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{why}[Красота этого совмещения]
+Нормальный OS-планировщик держит \emph{отдельные} структуры:
+priority (для очереди), load average (для IO-vs-CPU классификации),
+rate limit (для anti-hog). У нас \emph{одно поле} решает всё три
+задачи одновременно: приоритет = $v_i$ (вход), позиция в классе
+= $\rho_i$ (динамика), anti-hog = порог STARVED. Это
+\emph{механизм-дизайн}, а не инженерный хак: бюджет получается
+многофункциональным \emph{потому что} он — валюта, а не число.
+\end{why}
+
+\begin{why}[Почему $\rho$, а не абсолютный $b$]
+Нормировка на $B_i^{\max}$ убирает разницу классов: nice 0 и
+nice $-20$ имеют разные $B^{\max}$ в сотни раз, но одинаковые
+$\rho$ означают одинаковое поведенческое состояние
+(«половинный кошелёк» для обоих $=$ средняя активность).
+Роутинг должен зависеть от \emph{поведения}, не от \emph{класса}
+— иначе все nice-$-20$ ушли бы в P автоматически, независимо
+от их IO-профиля.
+\end{why}
+
+\paragraph{Разбор трёх сценариев.}
+\begin{center}\small
+\begin{tabular}{@{}lccl@{}}
+\toprule
+Сценарий & $\Delta_i$ & $p_i$ & Куда движется $\rho_i$\\
+\midrule
+CPU-hog (tight loop)           & 0         & $>0$ каждый квант & падает $\to 0$ (starve)\\
+Interactive (wait IO, then run) & $>0$ долго & $>0$ коротко & растёт к 1 (P-кластер)\\
+Sleeper (почти не просыпается) & $>0$      & $\approx 0$ & $=1$ (насыщен)\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{why}[Связь с Myerson-резервом]
+Прирост бюджета играет роль порогового правила: задача,
+накопившая достаточно, «проходит» в аукцион. В одномерных
+контрактных моделях это называется \emph{threshold policy}:
+агент допускается к торгу, когда его виртуальная оценка
+$\varphi(\theta_i)$ пересекает порог. Здесь порог реализован
+через $\rho_i$ — сравнение накопленного бюджета с максимумом.
+\end{why}
+
+\section{Часть II. MDP-формулировка (s4, §2)}
+
+\subsection{Пространство состояний (§2.1)}
+
+\[
+s^t = (\mathbf{x}^t,\; \mathbf{b}^t,\; \boldsymbol{\omega}^t)
+\]
+\begin{itemize}
+  \item $\mathbf{x}^t=(x_1^t,\ldots,x_K^t)\in\{0,\ldots,L{-}1\}^K$ —
+    оставшиеся кванты «аренды» на каждом ядре ($x_k^t=0$ означает
+    «ядро свободно»);
+  \item $\mathbf{b}^t$ — остатки бюджетов активных задач;
+  \item $\boldsymbol{\omega}^t$ — внешние факторы (температура,
+    энергопотребление, память).
+\end{itemize}
+
+Свободные ядра:
+\[
+K_P^t = K_P - |\{k\in\mathcal{P}: x_k^t\geq 1\}|,\quad
+K_E^t = K_E - |\{k\in\mathcal{E}: x_k^t\geq 1\}|.
+\]
+
+\subsection{Пространство действий (§2.2)}
+
+\paragraph{Что такое действие.}
+Действие $a^t$ на шаге $t$ — это \emph{решение механизма о
+распределении всех свободных ядер по всем активным задачам}. Не
+одной задаче, не одному ядру: \textbf{всё сразу}. Это decision
+variable, которую оптимизирует планировщик, максимизируя welfare.
+
+\paragraph{Формальная запись.}
+Для каждой задачи $i\in\mathcal{N}^t$ вводится пара индикаторов:
+\[
+a_i^t = (a_{i,P}^t,\; a_{i,E}^t) \in \{0,1\}^2.
+\]
+Смысл битов:
+\begin{itemize}
+  \item $a_{i,P}^t = 1$ — «на шаге $t$ задача $i$ получает \emph{какое-то} P-ядро»;
+  \item $a_{i,E}^t = 1$ — «получает \emph{какое-то} E-ядро»;
+  \item $a_{i,P}^t = a_{i,E}^t = 0$ — «не получает ничего в этот квант».
+\end{itemize}
+
+\begin{why}[Почему не указывается \emph{какое именно} ядро]
+Внутри кластера ядра симметричны — P1 и P2 отличаются только
+номером. С точки зрения модели выдача задаче P1 или P2 даёт
+тот же $\phi_P$, ту же будущую welfare. Поэтому действие
+агрегирует: важен \emph{класс} ядра, не его индекс. Конкретное
+ядро выбирается уже отдельно (в реализации — через
+\texttt{scx\_bpf\_pick\_idle\_cpu} с учётом NUMA/cache locality,
+§I7.1).
+\end{why}
+
+\paragraph{Взаимное исключение: задача на одном ядре.}
+\[
+a_{i,P}^t + a_{i,E}^t \leq 1,\qquad \forall i\in\mathcal{N}^t.
+\]
+Словами: \emph{одна задача в один квант занимает не более одного
+ядра}. Нет параллелизма внутри задачи (модель single-threaded:
+одна задача $\equiv$ один поток). Если задача многопоточная — в
+модели она представлена \emph{несколькими} $i_1,i_2,\ldots$, по
+одному на поток.
+
+\begin{why}[Почему не $=1$, а $\leq 1$]
+$\leq 1$ позволяет $a_{i,P}^t=a_{i,E}^t=0$ — задача может вообще
+ничего не получить на этом шаге (ядер не хватило, либо механизм
+решил, что её $\phi$ слишком мал по сравнению с конкурентами).
+Строгое равенство потребовало бы, чтобы каждой активной задаче
+выделялось ядро каждый квант, что невыполнимо при
+$|\mathcal{N}^t|>K$.
+\end{why}
+
+\paragraph{Ёмкостные ограничения: не превысить число свободных ядер.}
+\[
+\sum_{i\in\mathcal{N}^t} a_{i,P}^t \;\leq\; K_P^t, \qquad
+\sum_{i\in\mathcal{N}^t} a_{i,E}^t \;\leq\; K_E^t.
+\]
+Словами: суммарное число задач, получающих P-ядро, не превышает
+числа \emph{свободных} P-ядер $K_P^t$ (аналогично для E).
+Напомним: $K_P^t$ считается по состоянию $\mathbf{x}^t$ —
+занятые задачами из прошлых квантов (ещё досматривающие свой
+контракт) ядра \emph{не свободны}, даже если сейчас мог бы быть
+лучший победитель.
+
+\paragraph{Полное пространство действий.}
+\[
+\mathcal{A}(s^t) \;=\;
+\Bigl\{(a_i^t)_{i\in\mathcal{N}^t} :\;
+  a_i^t\in\{0,1\}^2,\;
+  a_{i,P}^t+a_{i,E}^t\leq 1,\;
+  \textstyle\sum_i a_{i,P}^t\leq K_P^t,\;
+  \sum_i a_{i,E}^t\leq K_E^t
+\Bigr\}.
+\]
+Мощность: верхняя оценка $|\mathcal{A}(s^t)|\leq 3^{|\mathcal{N}^t|}$
+(каждая задача: P, E или пропуск), но с учётом ограничений —
+существенно меньше.
+
+\begin{why}[Зачем ограничение \emph{именно} на свободные, а не на все]
+Занятое ядро ещё исполняет прошлый контракт (simple contract,
+§3.1: раз выдали — гарантировано). Переназначить его сейчас —
+нарушить контракт и сломать IC (задача не сможет рассчитывать
+на своё обещанное время). Поэтому «свободные» $K_P^t,K_E^t$, а не
+«всего» $K_P,K_E$.
+\end{why}
+
+\paragraph{Пример.}
+$K_P=2$, $K_E=3$, $\mathbf{x}^t=(0,2,0,0,1)$ (ядра $P_1,E_1,E_2$
+свободны, $P_2,E_3$ заняты). Значит $K_P^t=1$, $K_E^t=2$.
+$\mathcal{N}^t=\{1,2,3,4\}$, четыре задачи конкурируют.
+
+Пример допустимого действия:
+\[
+a_1^t=(1,0),\; a_2^t=(0,1),\; a_3^t=(0,1),\; a_4^t=(0,0).
+\]
+Задача 1 получает P ($\sum a_{\cdot,P}=1\leq 1$\,OK), задачи 2 и 3 —
+E ($\sum a_{\cdot,E}=2\leq 2$\,OK), задача 4 пропускает этот квант.
+
+Пример \emph{недопустимого}: $a_1=(1,1)$ — задача получила и P, и E
+одновременно (нарушение $a_{1,P}+a_{1,E}\leq 1$).
+
+\paragraph{Как механизм \emph{выбирает} $a^t$.}
+Оптимальное действие — argmax социального благосостояния:
+\[
+a^{t*} \;=\; \arg\max_{a\in\mathcal{A}(s^t)}
+\sum_i \bigl[a_{i,P}\,\phi_P(\theta_i) + a_{i,E}\,\phi_E(\theta_i)\bigr]
+\;+\; \delta\cdot\mathbb{E}[W(s^{t+1})].
+\]
+Первая сумма — мгновенный welfare (ценность минус стоимость для
+выигравших задач). Второй член — ожидаемая \emph{будущая} welfare с
+дисконтом $\delta$: выдать ядро длинной задаче сейчас = заблокировать
+его от коротких, которые могли бы прийти потом.
+
+В реализации (§I2, §I7) этот argmax не решается точно — заменяется
+на локальные правила: $\rho$-роутинг в кластер + EEVDF-ordering
+внутри DSQ (аппроксимация argmax через virtual deadline).
+
+\subsection{Переход (§2.3)}
+
+Функция перехода:
+\[
+s^{t+1} = G(s^t,\; a^t,\; N_{t+1}).
+\]
+Три аргумента: текущее состояние $s^t$, решение механизма $a^t$, и
+случайный приход новых задач $N_{t+1}$. $G$ детерминирована по первым
+двум, стохастика целиком в $N_{t+1}$.
+
+Разложим переход покомпонентно — состояние $s^t=(\mathbf{x}^t,\mathbf{b}^t,\boldsymbol\omega^t)$.
+
+\textbf{(1) Вектор оставшихся квантов $\mathbf{x}^{t+1}$.} Для каждого
+ядра $k\in\{1,\ldots,K\}$:
+\[
+x_k^{t+1} =
+\begin{cases}
+m_\kappa(l_i) - 1 & \text{если на шаге } t \text{ ядро } k \text{ выделено задаче } i,\\
+\max(x_k^t - 1,\; 0) & \text{иначе.}
+\end{cases}
+\]
+где $m_P(l)=l$, $m_E(l)=\lceil l\sigma\rceil$ — длина контракта в
+квантах \emph{именно на этом} ядре.
+
+\begin{why}[Что означает «$l_i-1$», а не «$l_i$»]
+Первый квант контракта уже исполняется \emph{сейчас}, на шаге $t$.
+К моменту $t+1$ остаётся $l_i-1$ квантов «аренды». Если $l_i=1$
+(односамплевая задача) — сразу $x_k^{t+1}=0$, ядро свободно в
+следующем кванте.
+\end{why}
+
+\begin{why}[Почему $\max(\cdot,0)$]
+Отсчёт не уходит в минус. Когда контракт закончился ($x_k^t=0$),
+ядро остаётся свободным и тик спустя ($x_k^{t+1}=0$) — идемпотентно.
+\end{why}
+
+\textbf{(2) Вектор бюджетов $\mathbf{b}^{t+1}$.} Для каждой задачи $i$:
+\[
+b_i^{t+1} = b_i^t - p_i^t + \Delta_i^t,
+\]
+где $p_i^t$ — VCG-платёж за квант (ноль, если задача не получила
+ядро), а $\Delta_i^t \geq 0$ — пополнение бюджета за время простоя
+(§I2 реализации: $\Delta_i^t = \Delta t_{\text{idle}}\cdot v_i /
+D_{\text{rep}}$).
+
+\begin{why}[Связь с §1.3]
+Условие $p_i\leq B_i$ — это инвариант, удерживаемый переходом:
+если $p_i^t$ превысил бы остаток $b_i^t$, механизм в $a^t$ \emph{не}
+выделит задаче ядро (см.\ §8.3). То есть $b_i^{t+1}\geq 0$ всегда.
+\end{why}
+
+\textbf{(3) Множество активных задач $\mathcal{N}^{t+1}$.}
+\[
+\mathcal{N}^{t+1} = \bigl(\mathcal{N}^t \setminus F^t\bigr) \cup N_{t+1},
+\]
+где $F^t$ — задачи, завершившиеся или отброшенные на шаге $t$
+(полностью отработали контракт, либо $b_i<0$), а $N_{t+1}$ —
+случайный i.i.d.\ набор новых задач.
+
+\textbf{(4) Внешние факторы} $\boldsymbol\omega^{t+1}$ эволюционируют
+по заданной цепи (температура, thermal throttling, память) —
+экзогенно к решению механизма.
+
+\paragraph{Пример (один P-ядерный квант).}
+$K_P=2$, $K_E=0$, на шаге $t$:
+\[
+\mathbf{x}^t=(0,\,3),\quad \mathcal{N}^t=\{1,2\},\quad
+\theta_1=(10,2),\;\theta_2=(5,4).
+\]
+Ядро 1 свободно ($x_1^t=0$), ядро 2 занято на 3 кванта. Механизм
+выбирает: выдать ядро 1 задаче 1 (у неё выше $\phi_P$). Новых задач
+нет: $N_{t+1}=\emptyset$.
+
+Тогда:
+\[
+\mathbf{x}^{t+1} = (l_1-1,\; \max(3-1,0)) = (1,\,2),\qquad
+\mathcal{N}^{t+1}=\{1,2\}.
+\]
+Задача 1 теперь «арендовала» ядро 1 ещё на 1 квант (итого её
+контракт $l_1=2$ квантов). Задача 2 продолжает досматривать свои
+3 квантa на ядре 2.
+
+\paragraph{Марковское свойство.}
+$s^{t+1}$ зависит только от $s^t,a^t,N_{t+1}$ — \emph{не} от истории.
+Это требование MDP: вся релевантная информация вшита в состояние.
+Именно поэтому $\mathbf{x}^t$ хранится явно (сколько осталось по
+контракту), а не выводится из прошлых решений.
+
+\begin{why}[Зачем внешние факторы $\boldsymbol\omega$]
+Они делают MDP \emph{реалистичным}: термальный трас\-лер меняет
+$\eta_P,\eta_E$, а значит и $\sigma$, а значит и $\phi_E$. В коде
+это пока не используется (см.\ §I8 — $\sigma$ берётся из статичного
+\texttt{max\_cap}/\texttt{min\_cap}), но в модели зафиксировано как
+hook для будущей динамики.
+\end{why}
+
+\subsection{Вознаграждения (§2.4)}
+
+Задача-покупатель $i$:
+\[
+r_i(s,a) = \begin{cases}
+v_i & \text{если } i \text{ получила ядро в первом кванте контракта},\\
+0 & \text{иначе.}
+\end{cases}
+\]
+Планировщик-продавец:
+\[
+r_0(s,a) = \sum_{k\in\mathcal{P}}\mu_P\cdot\mathbb{1}[x_k\geq 1]
++ \sum_{k\in\mathcal{E}}\mu_E\cdot\mathbb{1}[x_k\geq 1],\qquad
+\mu_P > \mu_E.
+\]
+$\mu_\kappa$ — базовая ставка вознаграждения за занятый квант.
+
+\begin{why}[Почему $\mu_P>\mu_E$]
+P-ядро даёт больше «полезной работы» в тот же квант, значит платит
+больше seller-ренты. Это асимметрия, которая позже вшивается в
+$\phi_P \neq \phi_E$ через стоимости $c_P,c_E$.
+\end{why}
+
+\section{Часть III. Контракты и ценообразование (s4, §3)}
+
+\subsection{Простой контракт (§3.1)}
+
+\[
+z_i^t = (a_i,\; m_i,\; p_i,\; \kappa_i)
+\]
+\begin{itemize}
+  \item $a_i\in[0,1]$ — вероятность получить ядро;
+  \item $m_i$ — длина контракта: $m_i=l_i$ на P, $m_i=\lceil l_i\sigma\rceil$ на E;
+  \item $p_i$ — полный платёж;
+  \item $\kappa_i\in\{P,E\}$ — тип ядра, выбранный \emph{механизмом}.
+\end{itemize}
+
+«Простой» = раз выданный контракт гарантирован, без условий на будущее.
+
+\subsection{Стоимости ядер (§3.2)}
+
+\[
+c_P > c_E > 0,\qquad \gamma = c_P/c_E > 1.
+\]
+Полная стоимость контракта:
+\[
+\mathrm{cost}(i,P) = c_P\cdot l_i,\qquad
+\mathrm{cost}(i,E) = c_E\cdot\lceil l_i\cdot\sigma\rceil.
+\]
+Какая дешевле — зависит от соотношения $\gamma$ и $\sigma$:
+\[
+\mathrm{cost}(i,E) \lessgtr \mathrm{cost}(i,P)
+\iff
+\frac{\lceil l_i\sigma\rceil}{l_i} \lessgtr \gamma.
+\]
+
+\begin{why}[$\sigma$ против $\gamma$]
+$\sigma$ — «во сколько раз медленнее E», $\gamma$ — «во сколько раз
+дороже P за квант». Если $\sigma<\gamma$, E-ядро дешевле даже с учётом
+замедления. Если $\sigma>\gamma$ — P-ядро выгоднее. Именно поэтому
+роутинг \emph{не тривиален}: нельзя просто «всё на P».
+\end{why}
+
+\subsection{Полезность задачи (§3.3)}
+
+\[
+u_i = \begin{cases}
+v_i - p_i & \text{при полном выполнении},\\
+-p_i & \text{иначе (прервана или не получила ядро)},
+\end{cases}
+\qquad p_i \leq B_i.
+\]
+
+\section{Часть IV. Социальная функция стоимости (s4, §4)}
+
+\subsection{Социальное благосостояние (§4.1)}
+
+Долгосрочное среднее:
+\[
+W(\pi) = J(\pi;R) =
+\lim_{T\to\infty}\frac{1}{T}\mathbb{E}\!\left[\sum_{t=1}^T R(s^t,a^t)\right],
+\quad R=\sum_{j=0}^{n} r_j.
+\]
+Это сумма всех вознаграждений (агентов \emph{и} планировщика).
+
+\subsection{Социальная стоимость (§4.2)}
+
+Целевая функция оптимизации:
+\[
+\mathrm{SC}(\pi) = \underbrace{W(\pi)}_{\text{благосостояние}}
+- \underbrace{\lambda_F\cdot\Psi(\pi)}_{\text{штраф за неравенство}},
+\]
+где
+\[
+\Psi(\pi) = \mathrm{Var}_i\!\left[\frac{u_i(\pi)}{v_i}\right].
+\]
+
+\begin{why}[Зачем нормировать на $v_i$]
+Без нормировки дорогая задача автоматически «стоит» больше и
+варианс завышается. Отношение $u_i/v_i$ — доля от максимально
+возможной полезности; это честная метрика fairness.
+\end{why}
+
+\begin{why}[Почему нет отдельного штрафа за энергию]
+Разница E vs P уже сидит в $c_P>c_E$: E-ядра дешевле в квантовой
+стоимости. Добавлять ещё один энергетический член = двойной счёт.
+\end{why}
+
+\section{Часть V. VCG-механизм (s4, §5)}
+
+\subsection{Offline, полная информация (§5.1)}
+
+При известном MDP оптимум:
+\[
+q^* = \arg\max_{q\in\Delta(P)} \langle q, R\rangle,
+\]
+где $q$ — occupancy measure (доля времени в каждой паре
+«состояние--действие» под политикой).
+
+Политика без задачи $i$:
+\[
+q^*_{-i} = \arg\max_{q\in\Delta(P)} \langle q, R_{-i}\rangle,\quad
+R_{-i}=\sum_{j\neq i} r_j.
+\]
+
+\textbf{Платёж VCG:}
+\[
+p_i^*(s,a) =
+\underbrace{\langle q^*_{-i}, R_{-i}\rangle}_{\text{оптимум без } i}
+- \underbrace{R_{-i}(s,a)}_{\text{фактическая welfare без } i}.
+\]
+
+\begin{why}[Pivot-интуиция]
+Задача платит ровно экстерналию: «насколько хуже стало остальным
+из-за того, что я заняла ядро». Если моя задача никого не вытесняет,
+$p_i=0$. Это ключ к incentive compatibility — врать про $\theta_i$
+невыгодно, потому что платишь не \emph{свою} ставку, а потерю
+\emph{соседей}.
+\end{why}
+
+\subsection{Адаптация к гетерогенным ядрам (§5.2)}
+
+Расширенная welfare через эффективную ценность:
+\[
+W(s^t)=\max_{a^t}\left[
+\sum_{i\in\mathcal{N}^t}\!\bigl(a_{i,P}^t\,\phi_P(v_i,l_i)
++ a_{i,E}^t\,\phi_E(v_i,l_i)\bigr)
++ \delta\,\mathbb{E}[W(s^{t+1})]
+\right],
+\]
+\[
+\boxed{\phi_P(v_i,l_i) = v_i - c_P\cdot l_i,\qquad
+\phi_E(v_i,l_i) = v_i - c_E\cdot\lceil l_i\sigma\rceil.}
+\]
+
+\begin{why}[Смысл $\phi$]
+$\phi_\kappa$ = «ценность минус стоимость занимаемого ресурса» =
+чистый вклад задачи в welfare на ядре типа $\kappa$. Механизм
+выбирает $\kappa$, максимизируя $\phi$ — не опрашивая задачу о её
+предпочтениях.
+\end{why}
+
+\subsection{Виртуальные оценки (§5.3, Sano)}
+
+Для revenue-maximizing варианта:
+\[
+\varphi(\theta_i) = v_i - \frac{1-F(v_i\mid l_i)}{f(v_i\mid l_i)}
+\]
+(Myerson virtual valuation). Оптимум:
+\[
+R^*(s^t) = \max_{a^t}\!\left[
+\sum_i \bigl(a_{i,P}^t\,\varphi_P(\theta_i)
++ a_{i,E}^t\,\varphi_E(\theta_i)\bigr)
++ \delta\,\mathbb{E}[R^*(s^{t+1})]
+\right],
+\]
+$\varphi_P = \varphi-c_P l_i$, $\varphi_E = \varphi-c_E\lceil l_i\sigma\rceil$.
+
+\begin{why}[Условие регулярности]
+\textbf{Monotone hazard rate}: $\lambda_l(v)=f(v|l)/(1-F(v|l))$
+не убывает по $v$, не возрастает по $l$. Выполнено для большинства
+разумных распределений (экспоненциальное, лог-нормальное, Гамма с
+$k\geq 1$). Гарантирует монотонность оптимальной политики и,
+следовательно, её реализуемость как truthful механизма.
+\end{why}
+
+\section{Часть VI. Протокол аукциона (s4, §6)}
+
+\subsection{На каждом кванте (§6.1)}
+
+\begin{enumerate}[leftmargin=*]
+  \item Планировщик наблюдает $s^t$.
+  \item Каждая задача $i\in\mathcal{N}^t$ подаёт ставку
+    $b_i=(b_i^v, b_i^l)$ (объявленные $v$ и $l$). Тип ядра
+    \emph{не} указывает — это решение аукциона.
+  \item Решается задача распределения:
+    \[
+    a^t = \arg\max_a \sum_i\bigl[a_{i,P}\phi_P(b_i)+a_{i,E}\phi_E(b_i)\bigr]
+    + \delta\,\mathbb{E}[W(s^{t+1})].
+    \]
+  \item Считаются VCG-платежи $p_i^t$ для победителей.
+  \item Обновление бюджетов $B_i \leftarrow B_i - p_i^t$.
+  \item Задачи с $B_i<0$ отклоняются.
+\end{enumerate}
+
+\subsection{Платёж VCG (§6.2)}
+
+\[
+p_i^t = W_{-i}(s^t) - [W(s^t) - \phi_\kappa(\theta_i)]
+      = W_{-i}(s^t) - W(s^t) + \phi_\kappa(\theta_i).
+\]
+
+Частный случай (одно свободное ядро, по Sano):
+\[
+p_i^t = \phi_\kappa(\hat\theta_j) + (\delta^{l_j}-\delta^{l_i})\,\bar W,
+\]
+где $j$ — задача на втором месте, $\bar W$ — ожидаемая будущая welfare.
+
+\begin{why}[Роль $\delta^{l_j}-\delta^{l_i}$]
+Этот член — «поправка на длину контракта»: победитель компенсирует
+разницу в том, насколько его контракт надолго блокирует ядро по
+сравнению с контрактом второго места. Длиннее контракт $\Rightarrow$
+больше упущенная будущая welfare $\Rightarrow$ больше платит.
+\end{why}
+
+\subsection{Дифференцированное ценообразование P vs E (§6.3)}
+
+\begin{align*}
+p_P(l) &= \frac{\delta-\delta^l}{1-\delta^l}\bar r_P
+   + \frac{1-\delta}{1-\delta^l}\cdot\frac{1}{\lambda(P^{**}(l))},\\
+p_E(l) &= \frac{\delta-\delta^{l'}}{1-\delta^{l'}}\bar r_E
+   + \frac{1-\delta}{1-\delta^{l'}}\cdot\frac{1}{\lambda(P^{**}(l'))},
+\qquad l'=\lceil l\sigma\rceil.
+\end{align*}
+$\bar r_P>\bar r_E$ — средние выручки.
+
+Свойство: $p_P(l)>p_E(l)$ \emph{за квант}. При этом
+$P_E=p_E\cdot l' \lessgtr P_P=p_P\cdot l$ — trade-off.
+
+При независимости $v_i$ и $l_i$ (Sano, Prop.5): \textbf{long-stay
+discount} — $p_\kappa(l+1) < p_\kappa(l)$. Длинные задачи платят
+\emph{меньше} за квант.
+
+\section{Часть VII. Онлайн-обучение (s4, §7)}
+
+Если распределения типов и переходы MDP неизвестны — учимся онлайн.
+
+\subsection{IHMDP-VCG (Leon \& Etesami 2022)}
+
+Эпизоды $k=1,2,\ldots$ растущей длины. В каждом эпизоде:
+\begin{itemize}
+  \item \textbf{Mixing phase}, длина $d^{[k]}=\dfrac{\log k}{\alpha S}$ —
+    без взимания платежей, цепь выходит на стационар.
+  \item \textbf{Stationary phase}, длина
+    $l^{[k]}=\dfrac{\max\{4,\sqrt{k}\}\log(|\mathcal{A}||\mathcal{S}|k/\zeta)}{\alpha\delta}$
+    — применяем $\pi^{[k]}$ и собираем платежи.
+\end{itemize}
+
+\subsection{Обновление политики (§7.2)}
+
+Решаем $(n+1)$ LP:
+\[
+\hat q^{[k+1]} = \arg\max_{q\in\Delta_\delta(\hat P^{[k]})}\langle q,\hat R^{[k]}\rangle,
+\qquad
+\hat q^{[k+1]}_{-i} = \arg\max_{q\in\Delta_\delta(\hat P^{[k]})}\langle q,\hat R^{[k]}_{-i}\rangle,
+\]
+\[
+\hat p^{[k+1]}_i(s,a) = \langle \hat q^{[k+1]}_{-i}, \hat R^{[k]}_{-i}\rangle
+- \check R^{[k]}_{-i}(s,a).
+\]
+$\hat R$ — UCB-оценка, $\check R$ — LCB. Это combines optimism
+(для allocation) с пессимизмом (для платежа) — уменьшает regret.
+
+\subsection{Гарантии (§7.3)}
+
+При $T\to\infty$ с вероятностью $\geq 1-O(\zeta)$:
+\begin{center}\small
+\begin{tabular}{@{}lc@{}}
+\toprule
+Метрика & Верх.\ граница regret\\
+\midrule
+Welfare             & $\tilde O(\varepsilon T n + T^{2/3}n)$\\
+Seller              & $\tilde O(\varepsilon T n^2 + T^{2/3}n^2)$\\
+Bidder              & $\tilde O(\varepsilon T n^2 + T^{2/3}n^2)$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Асимптотически: эффективность + truthfulness + IR одновременно.
+
+\section{Часть VIII. Свойства механизма (s4, §8)}
+
+\subsection{Incentive compatibility (§8.1, Sano Thm 1)}
+
+Механизм стимульно-совместим тогда и только тогда, когда для каждой $i$:
+\begin{enumerate}
+  \item $\alpha_i(v_i,l_i)$ не убывает по $v_i$ при фикс.\ $l_i$.
+  \item $\int_0^{v_i}\alpha_i(\nu,l_i)\,d\nu$ не возрастает по $l_i$.
+  \item $\exists\,\underline\Pi_i$, независимое от $l_i$:
+    \[
+    \Pi_i(v_i,l_i) = \underline\Pi_i + \int_0^{v_i}\alpha_i(\nu,l_i)\,d\nu.
+    \]
+\end{enumerate}
+\textbf{Следствие}: невыгодно завышать $v_i$, невыгодно занижать $l_i$.
+
+\subsection{IR (§8.2)}
+
+\[
+u_i(\pi^*,p^*) = W(\pi^*;R) - W(\pi^*_{-i};R_{-i}) \geq 0.
+\]
+Участие всегда выгодно.
+
+\subsection{Бюджетная допустимость (§8.3)}
+
+Дополнительное ограничение (отсутствует в классическом VCG):
+\[
+p_i^*(s,a) \leq B_i^t \quad \forall t.
+\]
+Если VCG-платёж превышает бюджет, задача \emph{не получает ядро} в
+этом кванте:
+\[
+\tilde a^t = \arg\max_a \sum_{i:\,p_i\leq B_i^t}
+[a_{i,P}\phi_P+a_{i,E}\phi_E] + \delta\,\mathbb{E}[W(s^{t+1})].
+\]
+
+\section{Часть IX. Пример: бинарные типы, одно свободное ядро (s4, §9)}
+
+Пусть $K_P=K_E=1$ и свободно ядро типа $\kappa$.
+
+Победитель:
+\[
+i^* = \arg\max_{i\in\mathcal{N}^t,\,B_i^t>0}
+\phi_\kappa(\theta_i) + \delta^{m_\kappa(l_i)}\,\bar W_\kappa,
+\]
+где $m_P(l)=l$, $m_E(l)=\lceil l\sigma\rceil$.
+
+Платёж:
+\[
+p_{i^*} = \phi_\kappa^{-1}\!\left(
+\phi_\kappa(\theta_j) + (\delta^{m_\kappa(l_j)}-\delta^{m_\kappa(l_{i^*})})\bar W_\kappa
+\;\Big|\; l_{i^*}
+\right),
+\]
+$j$ — второй по ранжированию.
+
+Если свободны оба ядра:
+\[
+\max\sum_i[a_{i,P}\phi_P+a_{i,E}\phi_E]+\delta\,\mathbb{E}[W(s^{t+1})]
+\]
+при $a_{i,P}+a_{i,E}\leq 1$, $\sum a_{i,P}\leq 1$, $\sum a_{i,E}\leq 1$,
+$p_i\leq B_i^t$.
+
+\begin{why}[$\phi_P>\phi_E$ \emph{не} всегда]
+При малом $v_i$ и большом $l_i$: $c_E\cdot\lceil l_i\sigma\rceil<c_P\cdot l_i$
+(если $\sigma<\gamma$) — E-ядро может дать большую эффективную
+ценность. \textbf{Вывод}: самую ценную задачу на P-ядро стоит пускать
+только когда выигрыш в скорости перевешивает разницу в стоимости.
+\end{why}
+
+\subsection{Сводка обозначений}
+
+\begin{center}\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Символ & Значение\\
+\midrule
+$K_P,K_E$         & Число P/E ядер\\
+$\mathcal{N}^t$   & Активные задачи в момент $t$\\
+$\theta_i=(v_i,l_i)$ & Тип: ценность и длина\\
+$B_i$             & Бюджет задачи $i$\\
+$c_P, c_E$        & Стоимость кванта P/E, $c_P>c_E$\\
+$\sigma$          & Замедление E-ядра, $\sigma=\eta_P/\eta_E>1$\\
+$\gamma$          & Отношение стоимостей, $\gamma=c_P/c_E>1$\\
+$\phi_\kappa$     & Эффективная ценность на ядре $\kappa$\\
+$\varphi$         & Виртуальная оценка (Myerson)\\
+$p_i^*$           & VCG-платёж\\
+$W(\pi)$          & Социальное благосостояние\\
+$\mathrm{SC}(\pi)$& Социальная стоимость (с fairness-штрафом)\\
+$q\in\Delta(P)$   & Occupancy measure\\
+$m_\kappa(l)$     & Длина контракта: $m_P=l$, $m_E=\lceil l\sigma\rceil$\\
+$\delta\in(0,1)$  & Дисконт-фактор\\
+$\rho_i=B_i/B_i^{\max}$ & Бюджетное отношение (прокси «bursty vs CPU-bound»)\\
+$l_{ns}$          & EWMA длины активации (прокси $l_i$)\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\clearpage
+\section{Часть X. Реализация: отличия от теории (VCG\_s4\_impl.md)}
+
+Абстрактная модель — канон. Ниже — \emph{что пришлось изменить} в
+BPF-планировщике \texttt{scx\_auction} и \emph{почему}.
+
+\subsection{I1. Непрерывная $\phi$ (отказ от квантования)}
+
+Теоретическое $\phi$ считается в квантах:
+\[
+\phi_P=v_i-c_P\lceil l_i/s\rceil,\quad
+\phi_E=v_i-c_E\lceil l_i\sigma/s\rceil.
+\]
+\textbf{Проблема}: все задачи с $l_i<s$ дают $\lceil l_i/s\rceil=1$ —
+короткие задачи неразличимы (потеря точности до 50×).
+
+Реализация масштабирует $v_i$ на $s$ и использует нс:
+\[
+\boxed{\phi_P = v_i\cdot s - c_P\cdot l_{ns},\qquad
+\phi_E = v_i\cdot s - c_E\cdot l_{ns}\cdot\sigma,}
+\]
+$l_{ns}$ — EWMA реально измеренного runtime (нс),
+$\sigma=\mathtt{max\_cap}/\mathtt{min\_cap}$.
+
+\begin{why}[Последствие: роутинг не зависит от $l_{ns}$]
+В линейной модели $\phi_P\gtrless\phi_E \iff c_E\sigma\gtrless c_P$.
+Это \emph{константа по задачам}. Значит argmax по $\kappa$ — чистое
+свойство платформы. Нужен другой сигнал роутинга — см.\ §I2.
+\end{why}
+
+\subsection{I2. Роутинг по бюджетному отношению с гистерезисом}
+
+\[
+\rho_i = \frac{B_i}{B_i^{\max}}\in[0,1].
+\]
+Двусторонний гистерезис:
+\begin{itemize}
+  \item $\rho_i\geq \rho_H$ (\texttt{BURST\_HIGH\_PCT}=70\%) — bursty → \texttt{AUCTION\_DSQ\_P}.
+  \item $\rho_i<\rho_L$ (\texttt{BURST\_LOW\_PCT}=30\%) — CPU-bound → \texttt{AUCTION\_DSQ\_E}.
+  \item $\rho_L\leq\rho_i<\rho_H$ — deadband, держим предыдущий выбор (\texttt{tctx->on\_p\_type} sticky).
+\end{itemize}
+Переоценка только на \texttt{SCX\_ENQ\_WAKEUP}. Preempt-переенкью
+держит прежний кластер.
+
+\begin{why}[Экономика $\rho_i$]
+Бюджет растёт пропорционально idle-времени ($\Delta t_{\text{idle}}\cdot v_i$).
+Значит $\rho_i$ — отношение idle/active — прокси «насколько задаче
+срочно нужен быстрый ресурс». Большой $\rho$ = интерактивная
+(пользователь ждёт). Маленький $\rho$ = batch.
+
+Гистерезис = threshold policy with inaction region из одномерных
+контрактных аукционов: мелкие флуктуации не двигают задачу
+туда-обратно (anti-churn).
+\end{why}
+
+\textbf{В презентации (21.04) показан упрощённый порог 50\%}
+без гистерезиса — это педагогическое упрощение. В коде настоящий
+30/70. При вопросе из зала знай разницу.
+
+\subsection{I3. Пропорциональная задержка для «голодающих»}
+
+Задачи с $B_i<B_i^{\max}/\mathtt{STARVE\_FRAC}$ (порог 10) → в
+\texttt{AUCTION\_DSQ\_STARVED}. Виртуальный дедлайн сдвигается
+пропорционально дефициту $\phi$:
+\[
+v_d \mathrel{+}= \frac{\max(0, -\phi_\kappa)}{D_{\text{starve}}},\quad
+D_{\text{starve}}=1000.
+\]
+Свойство: $\phi<0$ (стоимость перевешивает ценность) → ждёт дольше.
+Глубже дефицит — дольше ждёт \emph{внутри} starved. Это аппроксимация
+VCG-платежа: «дорогая» задача несёт большие последствия.
+
+\subsection{I4. Платёж VCG в форме Vickrey reserve}
+
+Теория (§6.2): $p_i^t=W_{-i}(s^t)-[W(s^t)-\phi_\kappa(\theta_i)]$.
+В одноядерном случае: $p_i\approx\phi_\kappa(\theta_j)+(\delta^{m_j}-\delta^{m_i})\bar W$.
+
+$W_{-i}$ в BPF-хуке невыполнимо — нужен $O(1)$ приблизитель.
+
+\subsubsection{I4.1. Оценщик $\varphi_{\text{hi}}$ на кластер}
+
+Глобальное поле на кластер $\kappa$. При каждом не-starved enqueue:
+\[
+\varphi_{\text{hi},\kappa}\leftarrow\begin{cases}
+\phi_\kappa(\theta_i) & \phi_\kappa > \varphi_{\text{hi},\kappa},\\
+\dfrac{15\,\varphi_{\text{hi},\kappa} + \max(0,\phi_\kappa(\theta_i))}{16} & \text{иначе (EWMA, }\alpha=1/16\text{)}.
+\end{cases}
+\]
+\textbf{Climb-fast / decay-slow}: новый максимум подхватывается мгновенно;
+без подтверждения плавно релаксирует к нулю (чтобы stale-всплеск не
+продолжал завышать платежи).
+
+\begin{why}[Почему это корректная аппроксимация]
+В стационарном режиме это сглаженная оценка максимума конкурирующих $\phi$.
+По Myerson-regular-distribution для single-item — именно эта локальная
+статистика эквивалентна $W_{-i}$.
+\end{why}
+
+\subsubsection{I4.2. Формула платежа}
+
+На \texttt{auction\_stopping}:
+\[
+p_i = \max\!\left(
+c_\kappa\cdot\frac{t_{\text{consumed}}}{s},\quad
+\varphi_{\text{hi},\kappa}\cdot\frac{t_{\text{consumed}}}{s^2}
+\right),
+\]
+$s=\mathtt{SCX\_SLICE\_DFL}$ (5 мс), $t_{\text{consumed}}=s-\mathtt{p{\to}scx.slice}$.
+
+\begin{why}[Единицы совпадают]
+$\varphi_{\text{hi},\kappa}$ имеет единицы weight\,$\cdot$\,ns (после
+§I1). Делим на $s^2$ — получаем per-ns weight. Умножаем на
+$t_{\text{consumed}}$ — weight-эквивалентный платёж за слайс. Тот же
+порядок, что и $c_\kappa\cdot t_{\text{consumed}}/s$.
+\end{why}
+
+Это \textbf{Vickrey reserve form}: $c_\kappa$ играет роль Myerson
+reserve price (posted cost кластера), а pivot-терм поднимает платёж
+к экстерналии когда есть конкуренты.
+
+\subsubsection{I4.3. Свойства}
+
+\begin{itemize}
+  \item \textbf{IR сохранено}: пол $c_\kappa\cdot t/s$ гарантирует
+    $p_i\geq$ old posted-price. Не платит меньше, чем раньше.
+  \item \textbf{Cold-queue degeneracy}: пустой кластер или только
+    $\phi<0$ → $\varphi_{\text{hi}}\to 0$ → возврат к posted-price.
+    Старое поведение — zero-pivot limit.
+  \item \textbf{IC в пределе}: при стационарности и monotone hazard rate
+    $\varphi_{\text{hi}}$ сходится к top-order статистике $\phi$ →
+    механизм асимптотически truthful.
+  \item \textbf{Нет first-quantum penalty}: оба терма $\propto t_{\text{consumed}}$.
+  \item \textbf{$O(1)$ в хуке}: 1 load + 2 mul + 1 cmp. Нет скана
+    очереди.
+\end{itemize}
+
+\subsection{I5. Wake-latency boost (VCG бюджет $\leftrightarrow$ EEVDF дедлайн)}
+
+Стандартный EEVDF дедлайн:
+\[
+v_d = v_e + \frac{q_{\max}\cdot\mathtt{SCALE}}{w_i},
+\qquad q_{\max}=\mathtt{max\_cap}\cdot s/\mathtt{CAPACITY\_SCALE}.
+\]
+$w_i$ — вес (Linux nice).
+
+На wake-up, если $\rho_i\geq\rho_H$ (высокий бюджет) — gap \emph{вдвое}:
+\[
+v_d = v_e + \frac{q_{\max}\cdot\mathtt{SCALE}}{2\,w_i}.
+\]
+
+\begin{why}[SC-интерпретация]
+Высокий $\rho_i$ = $\varphi(\theta_i)$ выше недавних платежей
+$\Rightarrow u_i/v_i>0$ и растёт. Пересмещаем задачу вперёд в
+dispatch-порядке — уменьшаем variance $\mathrm{Var}_i[u_i/v_i]$,
+тем самым уменьшая fairness-штраф в $\mathrm{SC}(\pi)=W-\lambda_F\Psi$.
+Это \textbf{прямая реализация одного шага минимизации
+$\mathrm{SC}$}. Preempt-переенкью исключён (running-задача не
+«отстаёт»).
+\end{why}
+
+Свойства: boost ограничен (half-gap, не ниже $v_e$); budget-gated
+(CPU-bound не получают); revert при падении $\rho$. Не меняет $\phi$,
+платёж, бюджет.
+
+\subsection{I6. Порядок dispatch и cross-cluster work-stealing}
+
+На каждом CPU при \texttt{ops.dispatch()}:
+\[
+\text{local cluster DSQ} \succ \text{cross-cluster DSQ} \succ \mathtt{AUCTION\_DSQ\_STARVED}.
+\]
+Cross-cluster work-stealing \textbf{безусловен} в обе стороны.
+Следует прямо из §1.1: idle = welfare loss. P-ядро, жрущее E-задачу,
+ускоряет её (усиливает realisation $\phi_E$); E-ядро с P-задачей —
+subopt, но лучше чем пусто. Кластерные предпочтения держатся
+\emph{на этапе enqueue} (§I2), не на dispatch.
+
+\subsection{I7. Work-conservation overrides}
+
+Три механизма, которые пробивают §I2 при наличии idle:
+
+\subsubsection*{I7.1. Idle-wake local dispatch}
+\texttt{ops.select\_cpu()} $\to$ \texttt{scx\_bpf\_select\_cpu\_dfl()}
+находит idle-CPU. Если кластер матчит preferred DSQ — задача идёт
+прямо в \texttt{SCX\_DSQ\_LOCAL} (минует глобальные очереди).
+Иначе — один probe за idle-CPU нужного кластера; если нашёлся —
+swap; нет — запуск на «чужом» idle.
+
+\subsubsection*{I7.2. P-cluster saturation spill}
+Если §I2 выбрал P и
+\[
+\mathtt{scx\_bpf\_dsq\_nr\_queued}(\mathtt{AUCTION\_DSQ\_P})\geq K_P,
+\]
+задача spill-ится в \texttt{AUCTION\_DSQ\_E}. Это enqueue-time
+enforcement $\sum_i a_{i,P}\leq K_P$. $K_P$ — из
+\texttt{/sys/devices/system/cpu/cpu*/cpu\_capacity} (90\% threshold).
+
+\subsubsection*{I7.3. Kick-on-enqueue}
+После \texttt{scx\_bpf\_dsq\_insert\_vtime()} — probe за idle-CPU
+и \texttt{SCX\_KICK\_IDLE}. Без этого deeply-idle CPU (особенно E под
+P-доминируемой нагрузкой) не запускают \texttt{dispatch()} до
+таймер-тика. Probe self-gating: нет idle → нет IPI.
+
+\subsection{I8. Параметры реализации}
+
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Константа & Значение & Смысл\\
+\midrule
+\texttt{C\_P\_DEF}        & 512 & $c_P$ (override через \texttt{-p})\\
+\texttt{C\_E\_DEF}        & 256 & $c_E$ (override через \texttt{-e})\\
+\texttt{BURST\_HIGH\_PCT} & 70  & $\rho_H$ — bursty → P\\
+\texttt{BURST\_LOW\_PCT}  & 30  & $\rho_L$ — CPU-bound → E\\
+\texttt{BUDGET\_MUL}      & 2000 & $B_i^{\max}=w_i\cdot$\texttt{BUDGET\_MUL}\\
+\texttt{REPLENISH\_DIV}   & $5\cdot 10^6$ & нс на единицу replenish\\
+\texttt{REPLENISH\_IDLE\_CAP}& $10^9$ & max idle interval (1 с)\\
+\texttt{STARVE\_FRAC}     & 10  & $B_i<B_i^{\max}/10$\\
+\texttt{STARVE\_PHI\_DIV} & 1000 & $\phi$ deficit → $v_d$\\
+\texttt{P\_CAP\_PCT}      & 90  & P-ядро: $\geq 90\%$ max\_cap\\
+\texttt{DISPATCH\_BATCH\_MAX}& 8 & max tasks per dispatch\\
+\texttt{SCALE}            & 100 & vtime fixed-point\\
+\texttt{INV\_SHIFT}       & 20  & inverse-weight shift\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Runtime \texttt{auction\_ctx} (из userspace): \texttt{max\_capacity},
+\texttt{min\_capacity}, \texttt{cost\_p}, \texttt{cost\_e},
+\texttt{p\_core\_count}, \texttt{e\_core\_count}, \texttt{vtime\_now},
+\texttt{total\_weight}.
+
+\subsection{I9. Соответствие код $\to$ модель}
+
+\begin{center}\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Код & Символ / секция\\
+\midrule
+\texttt{p->scx.weight}                      & $v_i$ — §1.2\\
+\texttt{tctx->len\_est\_ns}                 & $l_{ns}$ — §I1\\
+\texttt{tctx->budget}, \texttt{budget\_max} & $B_i, B_i^{\max}$ — §1.3\\
+\texttt{gdata->cost\_p/cost\_e}             & $c_P, c_E$ — §3.2\\
+\texttt{compute\_phi()}                     & $\phi_P, \phi_E$ — §5.2, §I1\\
+\texttt{auction\_enqueue()} routing         & $a^t$ — §2.2, §I2, §I7\\
+\texttt{scx\_bpf\_dsq\_insert\_vtime(...vd)}& EEVDF argmax ≈ §5.1\\
+\texttt{auction\_stopping()} budget update  & $p_i^t$ — §6.2, §I4\\
+\texttt{gdata->dsq\_phi\_hi\_p/e}           & $\varphi_{\text{hi},\kappa}$ — §I4.1\\
+\texttt{AUCTION\_DSQ\_STARVED}              & budget-feasibility — §8.3, §I3\\
+\texttt{running}/\texttt{stopping} vtime    & capacity-weighted vtime — §I1\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\clearpage
+\section{Часть XI. Презентация 21.04 — по слайдам}
+
+Каждый слайд: \textbf{что показано} + \textbf{что сказать} (сжатая
+речь) + \textbf{вероятные вопросы} и ответы.
+
+\subsection*{Слайд 1 — Титул}
+
+\textbf{Показано}: автор, тема, руководитель (Корхов В.\,В.), рецензент
+(Анохин Ю.\,В., НИЦ АЭРОДИСК).
+
+\textbf{Сказать}: «Уважаемые члены комиссии, представляется
+бакалаврская работа на тему \emph{Математическое моделирование и
+реализация планировщика процессов для гетерогенных процессорных
+архитектур}. Руководитель — к.ф.-м.н., доцент Корхов В.\,В.»
+
+\subsection*{Слайд 2 — Постановка задачи}
+
+\textbf{Показано}: мотивация (гетерогенные CPU) + 2 цели
+(формализовать как VCG + реализовать через sched\_ext).
+
+\textbf{Ключевая идея}: ядро = \emph{perishable good}, задача =
+\emph{agent with type} $\theta_i=(v_i,l_i)$.
+
+\begin{ask}[Q: почему EEVDF недостаточно для гетерогенных CPU?]
+EEVDF — proportional-share: распределяет CPU-время по весам, но не
+знает про разницу стоимости/скорости между P и E. Выбор ядра в Linux
+делается sched\_domains и EAS отдельно от основного алгоритма — они
+работают по эвристикам (utilization, capacity-aware load balancing),
+без единой оптимизационной модели. VCG даёт \emph{одну} целевую
+функцию — социальное благосостояние, — и все решения (кто, куда, за
+сколько) выводятся из неё.
+\end{ask}
+
+\begin{ask}[Q: почему именно Vickrey, не первая цена?]
+Первая цена требует равновесной теории Байеса (знание распределений
+соперников) — невыполнимо для системы из тысяч процессов. VCG truthful
+в доминирующих стратегиях: задача оптимальна при любом поведении
+других.
+\end{ask}
+
+\subsection*{Слайд 3 — Модель системы}
+
+\textbf{Показано}: $\mathcal{P}, \mathcal{E}$; дискретное время;
+$\sigma=\eta_P/\eta_E>1$; общий ISA; тип $\theta_i=(v_i,l_i)$;
+полезность $u_i=v_i-p_i$ при full completion; таблица бюджетов по
+классам.
+
+\textbf{Подчеркнуть}: ISA общий — \emph{любая} задача исполнима на
+\emph{любом} ядре, выбор — ход механизма.
+
+\begin{ask}[Q: откуда приходит $v_i$ для настоящего процесса Linux?]
+В реализации $v_i \equiv$ \texttt{p->scx.weight} — вес из nice-значения
+(nice -20 = 88761, nice 0 = 1024, nice 19 = 15). То есть $v_i$ —
+administrator-supplied приоритет. Для будущих работ — учить $v_i$ из
+ML-сигнала (interactivity score).
+\end{ask}
+
+\subsection*{Слайд 4 — MDP модель}
+
+\textbf{Показано}: состояние $(\mathbf x,\mathbf b,\boldsymbol\omega)$;
+действие $(a_{i,P},a_{i,E})$ с ограничениями feasibility;
+вознаграждения $r_i=v_i\mathbb{1}[\text{finish}]$, $r_0$ (сервер);
+критерий $W(\pi)$.
+
+\textbf{Подчеркнуть}: это \emph{average-cost} MDP, не finite-horizon —
+поэтому у нас limit $1/T$.
+
+\begin{ask}[Q: существование решения average-cost MDP?]
+Стандартная теория (Puterman, \S8): достаточно \emph{weak
+accessibility} — из любого состояния достижимо recurring state
+класса. В нашей модели: любая задача рано или поздно завершается или
+отбрасывается (budget exhaustion) $\Rightarrow$ цепь эргодична.
+\end{ask}
+
+\subsection*{Слайд 5 — Механизм VCG}
+
+\textbf{Показано}:
+\[
+\phi_P = v_i - c_P l_i,\quad \phi_E = v_i - c_E\lceil l_i\sigma\rceil;
+\]
+allocation argmax $W$ с дисконтом $\delta$; pivot-платёж
+$p_i^t=W_{-i}-(W-\phi_\kappa)$; 3 свойства: IC, IR, budget.
+
+\textbf{Объяснить словами}: «задача платит экстерналию» — 30 секунд
+максимум. Не уходить в измерение occupancy measure.
+
+\begin{ask}[Q: как вы считаете $W_{-i}$ в BPF?]
+Не считаю точно — это O(|$\mathcal{S}$|·|$\mathcal{A}$|), нереально в
+hot path. Вместо этого — \emph{Vickrey reserve form} (§I4): бегущая
+оценка $\varphi_{\text{hi},\kappa}$ на кластер с EWMA climb-fast /
+decay-slow. В пределе стационарной нагрузки она сходится к
+max-order statistic $\phi$ на кластере — той же локальной статистике,
+к которой $W_{-i}$ сводится по теореме Myerson для single-item.
+Детали — слайд запасной / §I4 отчёта.
+\end{ask}
+
+\begin{ask}[Q: что, если задача обанкротилась?]
+Секция §8.3: если $p_i^t > B_i^t$, задача не получает ядро в этот
+квант. В коде это \texttt{AUCTION\_DSQ\_STARVED} + пропорциональная
+задержка $v_d+=\max(0,-\phi_\kappa)/D$. Не убиваем — демотируем.
+\end{ask}
+
+\subsection*{Слайд 6 — Маршрутизация}
+
+\textbf{Показано}: три DSQ — P, E, Starved. Порог $\rho^*=50\%$ в
+презентации \emph{упрощён}. Прирост бюджета за idle —
+$B_i+=\Delta t_{\text{idle}}\cdot v_i/D_{\text{rep}}$.
+
+\begin{ask}[Q: почему не один порог, а гистерезис в коде?]
+Чтобы избежать flapping между кластерами, когда $\rho$ шумит около
+середины. В презентации для простоты показан один порог — в коде
+$\rho_H=70\%$, $\rho_L=30\%$ с deadband (§I2). Аналог — threshold
+policy with inaction region в 1D контрактных аукционах.
+\end{ask}
+
+\begin{ask}[Q: связь с Myerson-порогом?]
+Прирост бюджета за idle = «виртуальное лобби» задачи: чем дольше
+ждала, тем больше competitive she becomes. Это дискретный аналог
+Myerson reserve: задача допускается к аукциону, как только её
+накопленный «виртуальный разряд» превосходит порог $\rho^*$.
+\end{ask}
+
+\subsection*{Слайд 7 — sched\_ext}
+
+\textbf{Показано}: eBPF как инфра ядра; DSQ (local/global/user);
+цикл \texttt{select\_cpu → enqueue → dispatch → running/stopping}.
+
+\textbf{Подчеркнуть}: верификатор eBPF гарантирует завершимость и
+memory-safety. Нет risk kernel-panic от багов.
+
+\begin{ask}[Q: какой оверхед sched\_ext vs нативный?]
+По LWN/2408.01997: порядка единиц процентов на micro-benchmarks,
+часто compensated за счёт лучших решений (как у нас на hackbench).
+В нашей таблице (slide 11) scx\_EEVDF (просто перенос в BPF) на
+sysbench \emph{быстрее} нативного EEVDF — разница в пределах шума.
+\end{ask}
+
+\subsection*{Слайд 8 — Среда тестирования}
+
+\textbf{Показано}: Intel Core Ultra 7 265K (8P + 12E), Linux 7.0;
+4 сравниваемых планировщика (Linux EEVDF, scx\_EEVDF, scx\_LAVD,
+scx\_auction); 3 бенчмарка (hackbench, sysbench, sched\_latency);
+метрики (время, events/s, p99, RAPL).
+
+\begin{ask}[Q: почему именно эти 4 планировщика?]
+Linux EEVDF — baseline (mainline). scx\_EEVDF — контрольный перенос
+(отделяет оверхед BPF от разницы алгоритмов). scx\_LAVD —
+state-of-the-art на латентность, специализирован под interactive.
+scx\_auction — наш. Четыре точки образуют осмысленное сравнение по
+оси «простота $\leftrightarrow$ специализация».
+\end{ask}
+
+\subsection*{Слайд 9 — Hackbench}
+
+\textbf{Показано}: scx\_auction — лучшее время (8.43s vs 9.27s у
+native EEVDF) — примерно 9\% выигрыша.
+
+\textbf{Объяснение}: интерактивные задачи с высоким $\rho$ сразу
+идут в DSQ\_P (минуя глобальную очередь + wake-boost из §I5).
+Hackbench — чистый socket-ping-pong, доминирует wake-up latency.
+
+\subsection*{Слайд 10 — Sysbench}
+
+\textbf{Показано}: scx\_auction отстаёт от лидера (scx\_EEVDF)
+на $\approx$4.3\%.
+
+\textbf{Объяснение}: CPU-bound нагрузка → бюджеты быстро тают →
+$\rho<\rho_L$ → задачи на E-ядра. Это \emph{сознательный trade-off}
+(sacrifice peak throughput for energy).
+
+\begin{ask}[Q: можно ли выключить миграцию в sysbench?]
+Да — CLI-параметр \texttt{-e $c_E$} с большим значением делает
+E-ядра дорогими, и роутинг начинает предпочитать P. Но тогда
+теряется \emph{смысл} гетерогенного плана. Лучше — tune $c_P/c_E$
+под workload profile.
+\end{ask}
+
+\subsection*{Слайд 11 — Итоговая таблица}
+
+\textbf{Показано}: 8 метрик × 4 планировщика. Победы scx\_auction:
+hackbench, sleep duration. Проигрыши: sched delay p99 (LAVD лучше),
+sysbench (scx\_EEVDF чуть лучше).
+
+\textbf{Ключевой вывод}: VCG-подход \emph{конкурентоспособен} на
+throughput + \emph{адекватен} по энергии, но требует доработки
+tail-latency.
+
+\begin{ask}[Q: почему p99 plot хуже 38ms?]
+Две причины: (1) STARVED-очередь по построению демотирует задачу ценой
+задержки — это \emph{by design}, fairness-штраф; (2) wake-boost
+половинит gap \emph{только} для bursty — CPU-bound задачи иногда ждут.
+LAVD оптимизирован именно под p99 и использует другие эвристики
+(vdeadline scaling, lock holder boost).
+\end{ask}
+
+\begin{ask}[Q: context switch K/s 62 vs 187 — почему так мало?]
+Аукцион группирует исполнение в длинные slice-ы: раз задача выиграла,
+она докручивает контракт (§3.1 «simple contracts» — full length
+guaranteed). Это снижает миграции и preempt-переключения.
+\end{ask}
+
+\subsection*{Слайд 12 — Литература}
+
+\textbf{Ключевые ссылки}:
+\begin{itemize}
+  \item Leon, Etesami 2022 (NeurIPS) — IHMDP-VCG и онлайн-обучение.
+  \item Sano 2023 — dynamic mechanism design, многопериодные контракты, Thm 1 (IC).
+  \item Myerson 1981 — optimal auction design, virtual valuation.
+  \item Stoica--Abdel-Wahab 1996 — EEVDF.
+  \item Agrawal et al.\ 2024 (arXiv:2408.01997) — sched\_ext.
+  \item ghOSt 2021 (SOSP) — user-space scheduling, идейный аналог.
+  \item PIE 2012 (ISCA) — performance impact estimation для hetero-scheduling.
+\end{itemize}
+
+\subsection*{Extra-1 — IC теорема (Sano Thm 1)}
+
+Три условия (см.\ §VIII.1). Практическое следствие: «врать про
+$v_i$ или $l_i$ невыгодно».
+
+\subsection*{Extra-2 — IHMDP-VCG онлайн}
+
+Эпизоды: mixing + stationary. Regret $\tilde O(\varepsilon T n + T^{2/3}n)$
+для welfare; квадратично по $n$ для seller/bidder. См.\ §VII.
+
+\subsection*{Extra-3 — Пример $K_P=K_E=1$}
+
+Победитель по $\phi_\kappa+\delta^{m_\kappa(l_i)}\bar W$; платёж через
+$\phi^{-1}_\kappa$ от второго места. Подчёркивает нетривиальность
+P-vs-E выбора.
+
+\clearpage
+\section{Часть XII. Частые вопросы комиссии — шпаргалка}
+
+\begin{ask}[Q: \textquotedblleft Это же просто EEVDF с новыми весами?\textquotedblright]
+Нет. EEVDF\,=\,proportional-share: $w_i$ фиксирован и задача получает
+$\sum w_j$-долю CPU. У нас $v_i$ — это оценка, а $p_i^t$ — платёж, и
+бюджет $B_i$ \emph{истощается}. Если задача спамит CPU — она
+\emph{платит} и \emph{теряет приоритет}. EEVDF такого механизма не
+имеет. Плюс — у EEVDF нет модели P/E, у нас $\phi_P\neq\phi_E$ и
+явный выбор.
+\end{ask}
+
+\begin{ask}[Q: \textquotedblleft Откуда известна истинная $v_i$? Процесс ведь не ставит ставку.\textquotedblright]
+В текущей реализации $v_i = w_i$ (weight из nice). Это администратор-supplied
+значение — кому доверяют столько, тот и имеет такой вес. Механизм
+\emph{truthful} в том смысле, что \emph{если} nice отражает настоящий
+приоритет, аукционное распределение будет социально-оптимальным.
+Будущая работа — автоматическая оценка $v_i$ из сигналов (interactivity,
+latency sensitivity).
+\end{ask}
+
+\begin{ask}[Q: \textquotedblleft Complexity per-tick?\textquotedblright]
+В hot-path (enqueue, stopping): $O(1)$. Нет скана очереди, нет
+решения LP. Все решения — локальные: $\phi$-comparison, $\rho$-test,
+EWMA update. Дорогие операции (периодический replenish, metrics) —
+throttled to per-task periods $\sim$ 1\,ms.
+\end{ask}
+
+\begin{ask}[Q: \textquotedblleft A как же starvation freedom?\textquotedblright]
+Гарантии starvation freedom через: (1) bounded waiting через
+STARVE\_FRAC и пропорциональную задержку; (2) replenish бюджета за
+idle; (3) work-conservation (§I6, §I7) — idle ядро \emph{не}
+стоит пустым.
+\end{ask}
+
+\begin{ask}[Q: \textquotedblleft Почему social cost $W - \lambda_F\Psi$, а не multi-objective?\textquotedblright]
+Scalarization проще (одна скалярная MDP), и $\lambda_F$ — явный
+tunable. Pareto-frontier исследование — future work.
+\end{ask}
+
+\begin{ask}[Q: \textquotedblleft Как выбираются $c_P, c_E$?\textquotedblright]
+Defaults 512 / 256 откалиброваны на Intel Core Ultra 7 265K:
+\texttt{max\_capacity}/\texttt{min\_capacity} $\approx 2$, и
+$\gamma=c_P/c_E=2$ даёт сбалансированный роутинг. CLI \texttt{-p/-e}
+override. Для другой платформы — tune.
+\end{ask}
+
+\begin{ask}[Q: \textquotedblleft Что, если workload меняется?\textquotedblright]
+Адаптация через (a) EWMA $l_{ns}$ — длина обновляется; (b)
+bundle-decay $\varphi_{\text{hi}}$ — старые pivot-оценки растворяются;
+(c) $\rho$-гистерезис — роутинг переоценивается на каждом wake.
+Формальный анализ — IHMDP-VCG regret bounds (§VII.3).
+\end{ask}
+
+\begin{ask}[Q: \textquotedblleft Кернел нестабилен с BPF-планировщиком?\textquotedblright]
+sched\_ext включает \texttt{scx\_ops\_error\_fallback}: при сбое
+BPF-программы ядро возвращается к CFS автоматически. Плюс eBPF
+verifier отклоняет программу, которая может зациклиться или выйти
+за память. В experimentation ни одного kernel panic за $>\!100$ h
+нагрузки.
+\end{ask}
+
+\section*{Приложение A. Чек-лист перед защитой}
+
+\begin{itemize}[leftmargin=*]
+  \item[$\square$] Знать \emph{формулу} $\phi_P=v-c_P l$, $\phi_E=v-c_E\lceil l\sigma\rceil$.
+  \item[$\square$] Знать \emph{формулу} pivot $p_i=W_{-i}-(W-\phi_\kappa)$.
+  \item[$\square$] Помнить, что в коде \emph{два} порога (30/70), в слайдах \emph{один} (50).
+  \item[$\square$] Объяснить VCG на пальцах за 30 сек («экстерналия»).
+  \item[$\square$] Назвать три свойства: IC, IR, budget feasibility.
+  \item[$\square$] Знать, что $v_i \equiv$ \texttt{p->scx.weight} (nice).
+  \item[$\square$] Связь wake-boost $\leftrightarrow$ $\mathrm{SC}$ fairness-term.
+  \item[$\square$] Почему scx\_auction хуже на sysbench — \emph{sacrifice for energy}.
+  \item[$\square$] Почему лучше на hackbench — \emph{DSQ\_P bypass + wake-boost}.
+  \item[$\square$] LAVD лучше по p99 — \emph{оптимизирован именно под это}.
+  \item[$\square$] На вопрос «как считаете $W_{-i}$» — ответ «Vickrey reserve form, EWMA».
+\end{itemize}
+
+\end{document}

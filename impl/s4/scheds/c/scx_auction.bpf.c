@@ -105,6 +105,14 @@ struct auction_ctx {
 	u32 cost_e;
 	u32 p_core_count;   /* #CPUs classified as P-cluster (cap ≥ 90% max)    */
 	u32 e_core_count;   /* #CPUs classified as E-cluster                    */
+	/*
+	 * Per-cluster running estimator of max positive φ observed at enqueue.
+	 * Feeds VCG-pivot approximation in auction_stopping (§I4):
+	 *   payment = max(cost_based, pivot_based), pivot_based ∝ φ_hi_κ.
+	 * Updated on every enqueue: climb instantly, decay by EWMA (α=1/16).
+	 */
+	u64 dsq_phi_hi_p;
+	u64 dsq_phi_hi_e;
 };
 
 struct {
@@ -436,6 +444,20 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	p->scx.dsq_vtime = ve;
 
 	/*
+	 * φ_P / φ_E once — used for (a) proportional starvation ordering,
+	 * and (b) VCG-pivot estimator update (see §I4).  Hoisted above the
+	 * starved/normal branch so both code paths reuse it.
+	 */
+	u32 en_min_cap = gdata->min_capacity ?: CAPACITY_SCALE;
+	u32 en_cost_p  = gdata->cost_p       ?: C_P_DEF;
+	u32 en_cost_e  = gdata->cost_e       ?: C_E_DEF;
+	u64 en_len_est = tctx->len_est_ns ?: (u64)(SCX_SLICE_DFL ?: 5000000);
+	s64 phi_p, phi_e;
+
+	compute_phi(weight, en_len_est, max_cap, en_min_cap,
+		    en_cost_p, en_cost_e, &phi_p, &phi_e);
+
+	/*
 	 * Budget check: exhausted tasks → AUCTION_DSQ_STARVED.
 	 * budget_max may be 0 if enable() hasn't run yet; treat as not starved.
 	 *
@@ -446,16 +468,6 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	 */
 	if (tctx->budget_max &&
 	    tctx->budget * STARVE_FRAC < tctx->budget_max) {
-		u32 min_cap = gdata->min_capacity ?: CAPACITY_SCALE;
-		u32 cost_p  = gdata->cost_p       ?: C_P_DEF;
-		u32 cost_e  = gdata->cost_e       ?: C_E_DEF;
-		u64 len_est = tctx->len_est_ns ?: (u64)(SCX_SLICE_DFL ?: 5000000);
-		s64 phi_p, phi_e;
-
-		/* Only starved tasks need φ for proportional ordering. */
-		compute_phi(weight, len_est, max_cap, min_cap, cost_p, cost_e,
-			    &phi_p, &phi_e);
-
 		s64 phi = (phi_p < phi_e) ? phi_p : phi_e; /* worst-case φ */
 		if (phi < 0)
 			vd += (u64)(-phi) / STARVE_PHI_DIV;
@@ -509,6 +521,27 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	} else {
 		dsq_id          = AUCTION_DSQ_E;
 		tctx->on_p_type = 0;
+	}
+
+	/*
+	 * VCG-pivot estimator update (§I4).  Feed the chosen cluster's φ_hi
+	 * with this task's φ_κ.  Climb instantly on a new maximum, decay by
+	 * EWMA (α = 1/16) otherwise — absent reinforcement, the estimator
+	 * relaxes toward zero so a stale burst doesn't overcharge later tasks.
+	 * Only the normal (non-starved) path feeds the estimator: starved
+	 * tasks don't compete for the pivot slot.
+	 */
+	{
+		s64 phi_k   = (dsq_id == AUCTION_DSQ_P) ? phi_p : phi_e;
+		u64 phi_new = (phi_k > 0) ? (u64)phi_k : 0;
+		u64 *phi_hi = (dsq_id == AUCTION_DSQ_P)
+			      ? &gdata->dsq_phi_hi_p
+			      : &gdata->dsq_phi_hi_e;
+
+		if (phi_new > *phi_hi)
+			*phi_hi = phi_new;
+		else
+			*phi_hi = (*phi_hi * 15 + phi_new) >> 4;
 	}
 
 insert:
@@ -612,27 +645,53 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 		gdata->vtime_now += svc_vtime / gdata->total_weight;
 
 	/*
-	 * Budget payment (model §6.1 step 5 / §6.2 posted-price approximation):
-	 *   payment = C_κ * consumed_quanta
-	 * P-core payment is larger than E-core (c_P > c_E), reflecting higher
-	 * opportunity cost of occupying a fast core.
+	 * Budget payment — VCG-pivot approximation (§6.2 / §I4).
+	 *
+	 *   pay = max(cost_based, pivot_based)
+	 *   cost_based  = c_κ * consumed / slice          — Myerson-reserve floor
+	 *   pivot_based = φ_hi_κ * consumed / slice / slice
+	 *                 — externality imposed on the best alternative task
+	 *                 still queued in cluster κ, normalised to budget units
+	 *
+	 * φ_hi_κ is maintained at enqueue (EWMA of positive φ observed on
+	 * cluster κ).  In a single-free-core slot it approximates φ_{second}
+	 * from model §9; in heavier loads it tracks the running distribution
+	 * of competing types, which is the local statistic W_{-i} reduces to
+	 * under Myerson's regular-distribution single-item equivalence.
+	 *
+	 * The max(·,·) realises the Vickrey reserve-price form:
+	 *   - empty/cold queue → φ_hi ≈ 0 → pay = cost_based (posted-price
+	 *     degenerates to the Myerson reserve, preserving IR);
+	 *   - hot queue with high-φ alternatives → pay climbs toward second-
+	 *     best φ, pulling the mechanism into the VCG-pivot regime (IC
+	 *     recovered in the limit of stationary workloads).
+	 *
+	 * Minimum of 1 prevents free rides for sub-µs slices.
 	 */
 	if (tctx) {
 		u64 slice = SCX_SLICE_DFL ?: 5000000;
 		u32 cost_kappa;
 		u32 max_cap = gdata->max_capacity ?: CAPACITY_SCALE;
+		bool is_p   = (u64)cap * 100 >= (u64)max_cap * P_CAP_PCT;
 
-		/* Reuse the capacity we already fetched for this CPU. */
-		cost_kappa = (u64)cap * 100 >= (u64)max_cap * P_CAP_PCT ?
-			cost_p : cost_e;
+		cost_kappa = is_p ? cost_p : cost_e;
 
+		u64 cost_based = (u64)cost_kappa * consumed / slice;
+
+		u64 phi_hi     = is_p ? gdata->dsq_phi_hi_p : gdata->dsq_phi_hi_e;
 		/*
-		 * Proportional payment: C_κ * consumed_ns / slice.
-		 * Old ceiling-quanta approach made short tasks overpay
-		 * (1 ns cost same as 5 ms), biasing them toward STARVED.
-		 * Minimum of 1 prevents free rides for sub-µs slices.
+		 * φ_hi has units of weight·slice (ns weighted).  Normalise to
+		 * per-quantum budget units:
+		 *   pivot_based = (φ_hi / slice) * (consumed / slice)
+		 * Rearranged to preserve precision with integer arithmetic:
+		 *   pivot_based = φ_hi * consumed / (slice * slice)
+		 * Typical magnitudes (weight=100, slice=5e6): φ_hi ≤ 5e8 →
+		 * pivot_based ≤ weight * consumed/slice, the same order as
+		 * cost_based; safe against u64 overflow (5e8 * 5e6 = 2.5e15).
 		 */
-		u64 payment = (u64)cost_kappa * consumed / slice;
+		u64 pivot_based = phi_hi * consumed / slice / slice;
+
+		u64 payment = cost_based > pivot_based ? cost_based : pivot_based;
 		if (!payment && consumed)
 			payment = 1;
 
