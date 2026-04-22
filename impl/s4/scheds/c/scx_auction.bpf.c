@@ -452,11 +452,14 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 
 	/*
 	 * Virtual-time eligibility and deadline (EEVDF kernel, same as s3+).
-	 * q_max = max_cap * slice / CAPACITY_SCALE  (capacity-normalised quantum)
+	 * q_max = max_cap * slice / CAPACITY_SCALE  (capacity-normalised quantum).
+	 * Must use SLICE_P, not SLICE_MAX — this is the EEVDF deadline gap, a
+	 * latency control.  Using SLICE_MAX doubles the gap, loosens deadlines,
+	 * and regresses wake/request p99 under contention.
 	 */
 	v_now  = gdata->vtime_now;
 	ve     = p->scx.dsq_vtime;
-	q_max  = (u64)max_cap * AUCTION_SLICE_MAX / CAPACITY_SCALE;
+	q_max  = (u64)max_cap * AUCTION_SLICE_P / CAPACITY_SCALE;
 	min_ve = (v_now > q_max) ? (v_now - q_max) : 0;
 
 	if (time_before(ve, min_ve))
