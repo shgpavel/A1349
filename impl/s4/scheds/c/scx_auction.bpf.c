@@ -83,6 +83,31 @@ char _license[] SEC("license") = "GPL";
 #define INV_SHIFT           20
 #define DISPATCH_BATCH_MAX  8
 
+/*
+ * Dual slice length (dynamic, cluster-conditioned):
+ *
+ *   SLICE_P — short slice for P-cluster (bursty, latency-sensitive
+ *             tasks).  Matches kernel default so message-passing
+ *             workloads like hackbench see the familiar tight
+ *             preempt window — short tasks voluntarily yield long
+ *             before exhausting it, but the shorter ceiling keeps
+ *             CPU-bound squatters from delaying the next waker.
+ *
+ *   SLICE_E — longer slice for E-cluster (CPU-bound, steady tasks).
+ *             Routed-to-E tasks have low budget ratio ⇒ they are in
+ *             the CPU-bound regime of §I3's hysteresis band, so the
+ *             fewer-context-switch benefit dominates.  A 2× slice
+ *             halves the per-second dispatch/stopping overhead on
+ *             the cluster that runs the long stretches.
+ *
+ * Cluster membership is known at insert (dsq_id) and at stopping
+ * (tctx->on_p_type) — both sites read the corresponding slice for
+ * the "consumed = slice − p->scx.slice" arithmetic.
+ */
+#define AUCTION_SLICE_P     (SCX_SLICE_DFL ?: 20000000ULL)
+#define AUCTION_SLICE_E     (2ULL * (SCX_SLICE_DFL ?: 20000000ULL))
+#define AUCTION_SLICE_MAX   AUCTION_SLICE_E   /* for magnitude-only math */
+
 /* DSQ ids */
 #define AUCTION_DSQ_P       1
 #define AUCTION_DSQ_E       2
@@ -169,7 +194,8 @@ struct auction_task_ctx {
 	u32 weight_cached;
 	u32 inv_weight;
 	u8  on_p_type;
-	u8  _pad[7];
+	u8  long_slice;   /* 1 if granted AUCTION_SLICE_E, 0 otherwise */
+	u8  _pad[6];
 };
 
 struct {
@@ -315,9 +341,16 @@ compute_phi(u32 weight, u64 len_est_ns,
 	    u64 cost_e_sigma_q20,
 	    s64 *phi_p_out, s64 *phi_e_out)
 {
-	u64 slice = SCX_SLICE_DFL ?: 5000000;
-
-	u64 w_slice    = (u64)weight * slice;
+	/*
+	 * Cluster-conditioned valuation (§X.2): φ_κ uses the slice
+	 * that tasks in cluster κ are actually granted, so the
+	 * "value of a full slice" term matches the CPU-time the
+	 * allocation will yield.  Keeps φ_P vs φ_E crossover valid
+	 * while letting E-cluster tasks earn credit proportional to
+	 * their longer run-window.
+	 */
+	u64 w_slice_p  = (u64)weight * AUCTION_SLICE_P;
+	u64 w_slice_e  = (u64)weight * AUCTION_SLICE_E;
 	u64 cost_p_ns  = (u64)cost_p * len_est_ns;
 	/*
 	 * C_E * len_ns * σ computed via precomputed fixed-point:
@@ -334,8 +367,8 @@ compute_phi(u32 weight, u64 len_est_ns,
 		cost_e_ns = (u64)cost_e * len_est_ns * (u64)max_cap / (u64)mc;
 	}
 
-	*phi_p_out = (s64)w_slice - (s64)cost_p_ns;
-	*phi_e_out = (s64)w_slice - (s64)cost_e_ns;
+	*phi_p_out = (s64)w_slice_p - (s64)cost_p_ns;
+	*phi_e_out = (s64)w_slice_e - (s64)cost_e_ns;
 }
 
 /*
@@ -389,7 +422,7 @@ BPF_STRUCT_OPS(auction_select_cpu,
 	 * non-idle wakeups.
 	 */
 	if (cpu >= 0 && is_idle)
-		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, 0);
+		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, AUCTION_SLICE_P, 0);
 
 	return cpu;
 }
@@ -423,7 +456,7 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	 */
 	v_now  = gdata->vtime_now;
 	ve     = p->scx.dsq_vtime;
-	q_max  = (u64)max_cap * SCX_SLICE_DFL / CAPACITY_SCALE;
+	q_max  = (u64)max_cap * AUCTION_SLICE_MAX / CAPACITY_SCALE;
 	min_ve = (v_now > q_max) ? (v_now - q_max) : 0;
 
 	if (time_before(ve, min_ve))
@@ -463,7 +496,7 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	u32 en_min_cap = gdata->min_capacity ?: CAPACITY_SCALE;
 	u32 en_cost_p  = gdata->cost_p       ?: C_P_DEF;
 	u32 en_cost_e  = gdata->cost_e       ?: C_E_DEF;
-	u64 en_len_est = tctx->len_est_ns ?: (u64)(SCX_SLICE_DFL ?: 5000000);
+	u64 en_len_est = tctx->len_est_ns ?: (u64)AUCTION_SLICE_P;
 	s64 phi_p, phi_e;
 
 	compute_phi(weight, en_len_est, max_cap, en_min_cap,
@@ -517,14 +550,64 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 
 	if (want_p_enq) {
 		/*
-		 * Saturation spill: if DSQ_P already has ≥ #P-cores queued,
-		 * routing one more there just deepens the P backlog while
-		 * E-cores sit idle.  Flip to DSQ_E so an E-core dispatch()
-		 * picks it up directly (its local DSQ is E).  Only applies
-		 * when userspace has populated p_core_count.
+		 * Asymmetric-cluster spill (model extension §X.1):
+		 *
+		 * The base φ_P / φ_E crossover only encodes per-core speed
+		 * ratio σ = max_cap/min_cap — it does not know how many cores
+		 * each cluster has.  On asymmetric silicon (e.g. Intel 265K:
+		 * N_P=8, N_E=12) strict P-preference under-utilises the
+		 * larger E cluster: tasks pile on DSQ_P while E-cores idle
+		 * (they only backfill via work-steal).
+		 *
+		 * Extension: among clusters where the task is eligible,
+		 * prefer the one with lower *normalised queue depth*
+		 *   w_κ = Q_κ / N_κ   (expected wait-slot count)
+		 *
+		 * Cross-multiply to avoid 64-bit divide in hot path:
+		 *   prefer P iff  Q_P · N_E ≤ Q_E · N_P
+		 *   prefer E iff  Q_P · N_E >  Q_E · N_P
+		 *
+		 * Degenerate cases:
+		 *   - N_E = 0 (homogeneous): always P (no E cluster).
+		 *   - N_P = 0: always E.
+		 *   - Both counts unpopulated: fall back to single-threshold
+		 *     spill (Q_P ≥ some fallback) to stay work-conserving.
+		 *
+		 * This preserves the original want_p_enq gate (budget-ratio
+		 * hysteresis from §I3): tasks only reach this branch when
+		 * the auction's bursty-routing side has already chosen P.
+		 * The spill just redistributes *within* that preference when
+		 * E has spare normalised capacity.
 		 */
 		u32 p_cc = gdata->p_core_count;
-		if (p_cc && scx_bpf_dsq_nr_queued(AUCTION_DSQ_P) >= p_cc) {
+		u32 e_cc = gdata->e_core_count;
+
+		if (p_cc && e_cc) {
+			u64 p_q = scx_bpf_dsq_nr_queued(AUCTION_DSQ_P);
+			u64 e_q = scx_bpf_dsq_nr_queued(AUCTION_DSQ_E);
+
+			/*
+			 * Two-regime routing (model extension §X.1):
+			 *
+			 *   Regime A — moderate load (Q_E < N_E): E cluster
+			 *   still has free cores.  Asymmetric-cluster extension
+			 *   spills P→E once Q_P ≥ N_P AND P is relatively more
+			 *   crowded than E by normalised depth (Q_P/N_P >
+			 *   Q_E/N_E).
+			 *
+			 *   Regime B — saturated (Q_E ≥ N_E): fall back to the
+			 *   strict v1 rule "extra beyond N_P always spills to E"
+			 *   — keeps Q_P bounded so P-CPUs stay fast drains.
+			 */
+			if (p_q >= p_cc &&
+			    (e_q < e_cc ? (p_q * e_cc > e_q * p_cc) : 1)) {
+				dsq_id          = AUCTION_DSQ_E;
+				tctx->on_p_type = 0;
+			} else {
+				dsq_id          = AUCTION_DSQ_P;
+				tctx->on_p_type = 1;
+			}
+		} else if (p_cc && scx_bpf_dsq_nr_queued(AUCTION_DSQ_P) >= p_cc) {
 			dsq_id          = AUCTION_DSQ_E;
 			tctx->on_p_type = 0;
 		} else {
@@ -558,7 +641,39 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	}
 
 insert:
-	scx_bpf_dsq_insert_vtime(p, dsq_id, SCX_SLICE_DFL, vd, enq_flags);
+	{
+		/*
+		 * Dynamic dual slice: cluster sets the ceiling, task behavior
+		 * (len_est_ns) picks within it.
+		 *
+		 *   P-cluster  → always SLICE_P (latency-first, never amortize).
+		 *   E-cluster  → SLICE_E iff len_est ≥ SLICE_P (task regularly
+		 *                burns a full P-quantum before yielding, i.e.
+		 *                CPU-bound; throughput wins from amortisation).
+		 *                Otherwise SLICE_P — short/interactive tasks
+		 *                (schbench workers, hackbench msg-passing) must
+		 *                not make the cluster's head-of-queue wait a
+		 *                full SLICE_E between their own turns.
+		 *
+		 * pre-routing phi uses SLICE_E as the ceiling, so reducing the
+		 * grant below that ceiling is always safe (estimator conservative).
+		 */
+		u64 slice_ns;
+		u8  is_long = 0;
+		if (dsq_id == AUCTION_DSQ_P) {
+			slice_ns = AUCTION_SLICE_P;
+		} else {
+			u64 len_est = tctx->len_est_ns;
+			if (len_est >= AUCTION_SLICE_P) {
+				slice_ns = AUCTION_SLICE_E;
+				is_long  = 1;
+			} else {
+				slice_ns = AUCTION_SLICE_P;
+			}
+		}
+		tctx->long_slice = is_long;
+		scx_bpf_dsq_insert_vtime(p, dsq_id, slice_ns, vd, enq_flags);
+	}
 
 	/*
 	 * Kick idle CPU only on WAKEUP enqueue.  Probing pick_idle_cpu on
@@ -637,7 +752,19 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 	u32 weight;
 	u32 cost_p, cost_e;
 
-	consumed = SCX_SLICE_DFL - p->scx.slice;
+	/*
+	 * consumed must subtract from the *same* slice that was granted
+	 * at insert.  Dynamic slice state is cached in tctx->long_slice
+	 * (set iff E-cluster enqueue saw a shallow queue and amortized
+	 * with AUCTION_SLICE_E).  Fall back to P-slice on the cold path
+	 * where tctx isn't yet populated (first dispatch of a new task
+	 * before the auction classifies it).
+	 */
+	{
+		u64 slice_granted = (tctx && tctx->long_slice)
+				    ? AUCTION_SLICE_E : AUCTION_SLICE_P;
+		consumed = slice_granted - p->scx.slice;
+	}
 	weight   = p->scx.weight ?: 1;
 
 	if (!gdata)
@@ -682,14 +809,27 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 	 * Minimum of 1 prevents free rides for sub-µs slices.
 	 */
 	if (tctx) {
-		u64 slice = SCX_SLICE_DFL ?: 5000000;
+		/*
+		 * Two slice references needed here:
+		 *   slice_granted — size of quantum actually handed out at
+		 *     insert; used to normalise cost-based pay so that a full
+		 *     run of the grant pays exactly cost_κ.
+		 *   slice_cluster — slice magnitude that compute_phi used for
+		 *     this cluster when it populated dsq_phi_hi_κ; used to
+		 *     normalise the pivot term so pivot_based stays in
+		 *     weight·quantum units.
+		 */
+		u64 slice_granted = tctx->long_slice
+				    ? AUCTION_SLICE_E : AUCTION_SLICE_P;
+		u64 slice_cluster = tctx->on_p_type
+				    ? AUCTION_SLICE_P : AUCTION_SLICE_E;
 		u32 cost_kappa;
 		u32 max_cap = gdata->max_capacity ?: CAPACITY_SCALE;
 		bool is_p   = (u64)cap * 100 >= (u64)max_cap * P_CAP_PCT;
 
 		cost_kappa = is_p ? cost_p : cost_e;
 
-		u64 cost_based = (u64)cost_kappa * consumed / slice;
+		u64 cost_based = (u64)cost_kappa * consumed / slice_granted;
 
 		u64 phi_hi     = is_p ? gdata->dsq_phi_hi_p : gdata->dsq_phi_hi_e;
 		/*
@@ -697,12 +837,13 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 		 * per-quantum budget units:
 		 *   pivot_based = (φ_hi / slice) * (consumed / slice)
 		 * Rearranged to preserve precision with integer arithmetic:
-		 *   pivot_based = φ_hi * consumed / (slice * slice)
+		 *   pivot_based = φ_hi * consumed / (slice_cluster²)
 		 * Typical magnitudes (weight=100, slice=5e6): φ_hi ≤ 5e8 →
 		 * pivot_based ≤ weight * consumed/slice, the same order as
 		 * cost_based; safe against u64 overflow (5e8 * 5e6 = 2.5e15).
 		 */
-		u64 pivot_based = phi_hi * consumed / slice / slice;
+		u64 pivot_based = phi_hi * consumed
+				  / slice_cluster / slice_cluster;
 
 		u64 payment = cost_based > pivot_based ? cost_based : pivot_based;
 		if (!payment && consumed)
@@ -811,7 +952,7 @@ BPF_STRUCT_OPS(auction_enable, struct task_struct *p)
 		u64 bmax    = (u64)weight * BUDGET_MUL;
 		tctx->budget_max  = bmax;
 		tctx->budget      = bmax; /* start with full budget */
-		tctx->len_est_ns  = (u64)(SCX_SLICE_DFL ?: 5000000); /* 1 quantum */
+		tctx->len_est_ns  = (u64)AUCTION_SLICE_P; /* 1 quantum */
 		tctx->last_stop_ns = 0;
 		refresh_inv_weight(tctx, weight);
 	}

@@ -185,8 +185,14 @@ main(int argc, char **argv)
 	struct scx_auction *skel;
 	struct bpf_link    *link;
 	int                 opt;
+	/*
+	 * Intel 265K: σ = max_cap/min_cap = 1024/791 = 1.295.
+	 * cost ratio MUST equal σ (user constraint — drain-rate symmetry
+	 * across clusters).  Scale absolute level to match v1's drain rate
+	 * on P: cost_p = 1024 (= max_cap), cost_e = 1024/σ ≈ 790.
+	 */
 	__u32               cost_p = 1024;
-	__u32               cost_e = 560;
+	__u32               cost_e = 790;
 	unsigned int        refresh_tick = 0;
 
 	signal(SIGINT,  sigint_handler);
