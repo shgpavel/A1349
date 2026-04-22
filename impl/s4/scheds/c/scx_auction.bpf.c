@@ -421,8 +421,23 @@ BPF_STRUCT_OPS(auction_select_cpu,
 	 * Cluster preference is still enforced at enqueue-time routing for
 	 * non-idle wakeups.
 	 */
-	if (cpu >= 0 && is_idle)
+	if (cpu >= 0 && is_idle) {
+		/*
+		 * Clear long_slice before local dispatch: this path always
+		 * grants SLICE_P.  Leaving a stale 1 (from a prior E-cluster
+		 * enqueue that got SLICE_E) would make auction_stopping
+		 * compute consumed against SLICE_E = double the real grant,
+		 * over-charging the budget and driving the task toward
+		 * AUCTION_DSQ_STARVED.  tctx is created on first enqueue,
+		 * which has always preceded the first select_cpu for an
+		 * active task — if it hasn't yet, this grant carries no
+		 * mis-accounting risk because long_slice defaults to 0.
+		 */
+		struct auction_task_ctx *tctx = get_task_ctx(p, false);
+		if (tctx)
+			tctx->long_slice = 0;
 		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, AUCTION_SLICE_P, 0);
+	}
 
 	return cpu;
 }
