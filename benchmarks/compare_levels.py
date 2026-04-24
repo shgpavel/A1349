@@ -20,6 +20,9 @@ import pandas as pd
 from scipy import stats
 
 matplotlib.use("Agg")
+# TrueType font embedding — default Type 3 fonts crash some PDF viewers.
+matplotlib.rcParams["pdf.fonttype"] = 42
+matplotlib.rcParams["ps.fonttype"] = 42
 import matplotlib.pyplot as plt
 
 CI_LEVEL = 0.95
@@ -32,11 +35,16 @@ _RUN_CACHE: dict[tuple[str, str], list[pd.DataFrame]] = {}
 SCHED_COLORS = {
     "default": "#1f77b4",
     "s3": "#ff7f0e",
-    "s3+": "#2ca02c",
     "LAVD": "#8c564b",
     "s4": "#d62728",
 }
-SCHED_ORDER = ["default", "s3", "s3+", "LAVD", "s4"]
+SCHED_LABELS = {
+    "default": "Linux EEVDF (baseline)",
+    "s3": "scx_EEVDF",
+    "LAVD": "scx_LAVD",
+    "s4": "scx_auction",
+}
+SCHED_ORDER = ["default", "s3", "LAVD", "s4"]
 LEVEL_ORDER = ["light", "moderate", "stress"]
 
 # Metrics to compare across levels.
@@ -58,7 +66,8 @@ TS_METRICS = [
 
 ONESHOT_METRICS = [
     ("hackbench_time_sec", "Hackbench time (s)", True),
-    ("sysbench_events_per_sec", "Sysbench events/s", False),
+    ("sysbench_tps", "Sysbench OLTP tps", False),
+    ("sysbench_qps", "Sysbench OLTP qps", False),
     ("schbench_wakeup_p99_0_usec", "schbench Wakeup p99 (us)", True),
     ("schbench_wakeup_p99_9_usec", "schbench Wakeup p99.9 (us)", True),
     ("schbench_request_p99_0_usec", "schbench Request p99 (us)", True),
@@ -68,6 +77,10 @@ ONESHOT_METRICS = [
 
 def color_for(s):
     return SCHED_COLORS.get(s, "#7f7f7f")
+
+
+def label_for(s):
+    return SCHED_LABELS.get(s, s)
 
 
 def discover(session_root):
@@ -212,7 +225,7 @@ def grouped_bar(ax, scheds, levels, values, errs_lo, errs_hi, title, ylabel, low
     ax.set_title(title + note, fontsize=10)
     ax.set_ylabel(ylabel, fontsize=9)
     ax.set_xticks(x)
-    ax.set_xticklabels(scheds, rotation=0, fontsize=8)
+    ax.set_xticklabels([label_for(s) for s in scheds], rotation=0, fontsize=8)
     ax.grid(True, alpha=0.3, axis="y")
     ax.legend(title="Level", fontsize=7, title_fontsize=8)
 
@@ -295,7 +308,7 @@ def plot_line_vs_level(
         if not any(v is not None and not np.isnan(v) for v in ys):
             continue
 
-        ax.plot(x, ys, marker="o", color=color_for(s), label=s, linewidth=1.5)
+        ax.plot(x, ys, marker="o", color=color_for(s), label=label_for(s), linewidth=1.5)
 
         # fill_between emits warnings on NaN pairs; mask them out. Masked
         # segments are simply skipped, the line plot still shows the point.
@@ -339,7 +352,7 @@ def plot_line_vs_level(
 def write_summary_table(aggs, oneshots, scheds, levels, output_dir):
     """One PDF: rows = metric, cols = per (level, sched) cell with mean (CI)."""
     rows = []
-    headers = ["Metric"] + [f"{lv}\n{s}" for lv in levels for s in scheds]
+    headers = ["Metric"] + [f"{lv}\n{label_for(s)}" for lv in levels for s in scheds]
 
     def fmt(m, lo, hi):
         if m is None or np.isnan(m):

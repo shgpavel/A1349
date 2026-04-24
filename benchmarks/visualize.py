@@ -19,6 +19,9 @@ import matplotlib
 import pandas as pd
 
 matplotlib.use("Agg")
+# TrueType font embedding — default Type 3 fonts crash some PDF viewers.
+matplotlib.rcParams["pdf.fonttype"] = 42
+matplotlib.rcParams["ps.fonttype"] = 42
 import matplotlib.pyplot as plt
 
 # ---------------------------------------------------------------------------
@@ -28,12 +31,18 @@ import matplotlib.pyplot as plt
 SCHED_COLORS = {
     "default": "#1f77b4",  # blue
     "s3": "#ff7f0e",  # orange
-    "s3+": "#2ca02c",  # green
     "LAVD": "#8c564b",  # brown
     "s4": "#d62728",  # red
 }
 
-SCHED_ORDER = ["default", "s3", "s3+", "LAVD", "s4"]
+SCHED_LABELS = {
+    "default": "Linux EEVDF (baseline)",
+    "s3": "scx_EEVDF",
+    "LAVD": "scx_LAVD",
+    "s4": "scx_auction",
+}
+
+SCHED_ORDER = ["default", "s3", "LAVD", "s4"]
 LATENCY_PERCENTILES = [("avg", "-"), ("p99", ":")]
 LATENCY_PLOTS = [
     ("sched_delay", "Schedule Delay", "latency_sched_delay"),
@@ -54,10 +63,17 @@ THROUGHPUT_PLOTS = [
         True,
     ),
     (
-        "sysbench_events_per_sec",
-        "throughput_sysbench",
-        "Sysbench Throughput",
-        "sysbench (events/s)",
+        "sysbench_tps",
+        "throughput_sysbench_tps",
+        "Sysbench OLTP Throughput",
+        "sysbench (tps)",
+        False,
+    ),
+    (
+        "sysbench_qps",
+        "throughput_sysbench_qps",
+        "Sysbench OLTP Queries",
+        "sysbench (qps)",
         False,
     ),
     (
@@ -93,6 +109,10 @@ THROUGHPUT_PLOTS = [
 
 def color_for(sched):
     return SCHED_COLORS.get(sched, "#7f7f7f")
+
+
+def label_for(sched):
+    return SCHED_LABELS.get(sched, sched)
 
 
 def add_no_data(ax):
@@ -262,7 +282,7 @@ def plot_bar_metric(
 
     for sched, mean_value in scheduler_metric_means(data, scheds, column):
         values.append(mean_value)
-        labels.append(sched)
+        labels.append(label_for(sched))
         colors.append(color_for(sched))
 
     if values:
@@ -540,7 +560,7 @@ def plot_throughput(data, scheds, output_dir, metadata=None):
             if val is None:
                 continue
             values.append(val)
-            labels.append(sched)
+            labels.append(label_for(sched))
             colors.append(color_for(sched))
             ci = entry.get("oneshot_ci", {}).get(col)
             if ci and ci[0] is not None and ci[1] is not None:
@@ -625,7 +645,8 @@ def write_summary(data, scheds, metadata, output_dir):
     # One-shot benchmarks from metadata
     oneshot_metrics = [
         ("hackbench_time_sec", "Hackbench (s)", True),
-        ("sysbench_events_per_sec", "Sysbench (ev/s)", False),
+        ("sysbench_tps", "Sysbench OLTP (tps)", False),
+        ("sysbench_qps", "Sysbench OLTP (qps)", False),
         ("schbench_wakeup_p99_0_usec", "schbench wakeup p99 (us)", True),
         ("schbench_wakeup_p99_9_usec", "schbench wakeup p99.9 (us)", True),
         ("schbench_request_p99_0_usec", "schbench request p99 (us)", True),
@@ -633,7 +654,7 @@ def write_summary(data, scheds, metadata, output_dir):
     ]
 
     # Build table rows: each row = [metric_label, val_sched1, val_sched2, ...]
-    col_headers = ["Metric"] + scheds
+    col_headers = ["Metric"] + [label_for(s) for s in scheds]
     table_rows = []
 
     # Time-series metrics

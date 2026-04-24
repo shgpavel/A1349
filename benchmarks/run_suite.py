@@ -22,10 +22,10 @@ from pathlib import Path
 DEFAULT_LEVELS = ["light", "moderate", "stress"]
 
 SCHEDULERS = [
-    #("default", None),
-    #("s3", "impl/s3/build/scheds/c/scx_eevdf"),
+    ("default", None),
+    ("s3", "impl/s3/build/scheds/c/scx_eevdf"),
     #("s3+", "impl/s3+/build/scheds/c/scx_eevdf"),
-    #("LAVD", None),  # filled in from --lavd-bin
+    ("LAVD", None),  # filled in from --lavd-bin
     ("s4", "impl/s4/build/scheds/c/scx_auction"),
 ]
 
@@ -63,13 +63,6 @@ def prime_sudo():
     atexit.register(stop.set)
 
 
-def newest_csv(output_dir):
-    csvs = sorted(output_dir.glob("*.csv"), key=lambda p: p.stat().st_mtime)
-    if not csvs:
-        raise FileNotFoundError(f"no CSV in {output_dir}")
-    return csvs[-1]
-
-
 def resolve(repo_root, s):
     p = Path(s).expanduser()
     if not p.is_absolute():
@@ -91,6 +84,7 @@ def collect_one(
     interval,
     warmup,
     output_dir,
+    sysbench_db,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -106,6 +100,14 @@ def collect_one(
         "--schbench-duration", str(schbench_duration),
         "--output", str(output_dir),
         "--sched-latency-bin", str(sched_latency_bin),
+        "--sysbench-db-driver", sysbench_db["driver"],
+        "--sysbench-db-host", sysbench_db["host"],
+        "--sysbench-db-port", str(sysbench_db["port"]),
+        "--sysbench-db-user", sysbench_db["user"],
+        "--sysbench-db-password", sysbench_db["password"],
+        "--sysbench-db-name", sysbench_db["name"],
+        "--sysbench-tables", str(sysbench_db["tables"]),
+        "--sysbench-table-size", str(sysbench_db["table_size"]),
     ]
     if sched_bin is not None:
         cmd.extend(["--sched-bin", str(sched_bin)])
@@ -114,7 +116,7 @@ def collect_one(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--runs", type=int, default=3)
+    ap.add_argument("--runs", type=int, default=6)
     ap.add_argument(
         "--levels", default=",".join(DEFAULT_LEVELS), help="Comma-separated workload levels"
     )
@@ -123,7 +125,15 @@ def main():
     ap.add_argument("--phase-cooldown", type=float, default=3.0,
                     help="Cooldown seconds between phases and iterations")
     ap.add_argument("--sysbench-duration", type=int, default=10,
-                    help="sysbench cpu --time seconds")
+                    help="sysbench oltp_read_only --time seconds")
+    ap.add_argument("--sysbench-db-driver", default="pgsql")
+    ap.add_argument("--sysbench-db-host", default="127.0.0.1")
+    ap.add_argument("--sysbench-db-port", type=int, default=5432)
+    ap.add_argument("--sysbench-db-user", default="sbtest")
+    ap.add_argument("--sysbench-db-password", default="sbtest")
+    ap.add_argument("--sysbench-db-name", default="sbtest")
+    ap.add_argument("--sysbench-tables", type=int, default=4)
+    ap.add_argument("--sysbench-table-size", type=int, default=100000)
     ap.add_argument("--schbench-duration", type=int, default=30,
                     help="schbench -r runtime seconds")
     ap.add_argument("--interval", type=int, default=1)
@@ -182,12 +192,28 @@ def main():
     results_root = (repo_root / args.results_root / session).resolve()
     plots_root = (repo_root / args.plots_root / session).resolve()
 
+    sysbench_db = {
+        "driver": args.sysbench_db_driver,
+        "host": args.sysbench_db_host,
+        "port": args.sysbench_db_port,
+        "user": args.sysbench_db_user,
+        "password": args.sysbench_db_password,
+        "name": args.sysbench_db_name,
+        "tables": args.sysbench_tables,
+        "table_size": args.sysbench_table_size,
+    }
+
     print(f"Session:     {session}")
     print(f"Runs:        {args.runs}")
     print(f"Levels:      {levels}")
     print(f"Schedulers:  {[s[0] for s in scheds]}")
     print(f"Results:     {results_root}")
     print(f"Plots:       {plots_root}")
+    print(
+        f"sysbench DB: {sysbench_db['driver']}://{sysbench_db['user']}@"
+        f"{sysbench_db['host']}:{sysbench_db['port']}/{sysbench_db['name']} "
+        f"(tables={sysbench_db['tables']} size={sysbench_db['table_size']})"
+    )
 
     prime_sudo()
 
@@ -207,6 +233,12 @@ def main():
             f"level={level}  run={run_idx}/{args.runs}  "
             f"order={[s[0] for s in order]} ==="
         )
+
+        # Cooldown at plan-item boundary too — thermal state carries over
+        # from the prior plan's last scheduler otherwise.
+        if plan_idx > 1 and args.cooldown > 0:
+            print(f"Plan-boundary cooldown {args.cooldown}s...", flush=True)
+            time.sleep(args.cooldown)
 
         for i, (label, sched_bin) in enumerate(order):
             if i > 0 and args.cooldown > 0:
@@ -234,6 +266,7 @@ def main():
                 args.interval,
                 args.warmup,
                 out,
+                sysbench_db,
             )
 
     # Aggregation

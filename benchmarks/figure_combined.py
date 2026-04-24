@@ -33,7 +33,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 SCHED_COLORS = {
     "default": "#404040",
     "s3": "#A0A0A0",
-    "s3+": "#A0A0A0",
     "LAVD": "#000000",
     "s4": "#707070",
 }
@@ -44,13 +43,12 @@ TEXT_COLOR = "#000000"
 ACCENT_COLOR = "#000000"
 GRID_COLOR = "#CCCCCC"
 SCHED_LABELS = {
-    "default": "EEVDF",
-    "s3": r"sched\_ext EEVDF",
-    "s3+": r"sched\_ext EEVDF",
-    "LAVD": "LAVD",
-    "s4": "S4",
+    "default": "Linux EEVDF (baseline)",
+    "s3": r"scx\_EEVDF",
+    "LAVD": r"scx\_LAVD",
+    "s4": r"scx\_auction",
 }
-SCHED_ORDER = ["default", "s3", "s3+", "LAVD", "s4"]
+SCHED_ORDER = ["default", "s3", "LAVD", "s4"]
 
 
 def color_for(sched):
@@ -61,13 +59,33 @@ def label_for(sched):
     return SCHED_LABELS.get(sched, sched)
 
 
+WORKLOAD_PHASES = ("hackbench", "sysbench", "schbench")
+
+
+def _rename_aggregate(df, sched):
+    """Mirror visualize._rename_aggregate: _mean → base; keep _ci_*."""
+    rename = {c: c[: -len("_mean")] for c in df.columns if c.endswith("_mean")}
+    df = df.rename(columns=rename)
+    df["scheduler"] = sched
+    return df
+
+
 def load_data(csv_files):
     frames = []
     for f in csv_files:
         try:
-            frames.append(pd.read_csv(f))
+            df = pd.read_csv(f)
         except Exception as e:
             print(f"Warning: skipping {f}: {e}", file=sys.stderr)
+            continue
+        stem = Path(f).stem
+        if stem.endswith("_aggregate"):
+            sched = stem[: -len("_aggregate")]
+            df = _rename_aggregate(df, sched)
+        elif "phase" in df.columns:
+            # Raw per-run CSV: drop warmup/cooldown so means aren't diluted.
+            df = df[df["phase"].isin(WORKLOAD_PHASES)].copy()
+        frames.append(df)
     if not frames:
         print("Error: no valid CSV files loaded", file=sys.stderr)
         sys.exit(1)
@@ -117,7 +135,7 @@ TIMESERIES_PANELS = [
 # Bar panels: (metadata_key, title, ylabel, lower_is_better)
 BAR_PANELS = [
     ("hackbench_time_sec", "Hackbench", "Time (s)", True),
-    ("sysbench_events_per_sec", "Sysbench", "Events/s", False),
+    ("sysbench_tps", "Sysbench OLTP", "Transactions/s", False),
 ]
 
 

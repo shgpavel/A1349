@@ -99,7 +99,8 @@ CSV_COLUMNS = [
     "schbench_avg_rps",
     # hackbench / sysbench one-shot throughput (stamped on the final row of the phase)
     "hackbench_time_sec",
-    "sysbench_events_per_sec",
+    "sysbench_tps",
+    "sysbench_qps",
     # Phase: hackbench | sysbench | schbench | cooldown | warmup
     "phase",
     "iter",
@@ -383,15 +384,20 @@ class SchedLatencySource:
         result[f"{prefix}_avg_ns"] = avg
         result[f"{prefix}_p99_ns"] = p99
 
-        # Context switch counters — per-interval deltas computed by sched_latency
-        # userspace against its own cumulative BPF snapshot (BPF never resets).
+        # Context switch counters: per-second rate (sched_latency already
+        # divides its interval delta by the -i interval before emitting).
+        # Parse atomically — a partial assignment leaves inconsistent state.
         if len(parts) >= 10:
             try:
-                result["total_csw_per_sec"] = int(parts[7]) if parts[7] else ""
-                result["voluntary_csw_per_sec"] = int(parts[8]) if parts[8] else ""
-                result["involuntary_csw_per_sec"] = int(parts[9]) if parts[9] else ""
+                total = int(parts[7]) if parts[7] else ""
+                vol   = int(parts[8]) if parts[8] else ""
+                invol = int(parts[9]) if parts[9] else ""
             except ValueError:
                 pass
+            else:
+                result["total_csw_per_sec"] = total
+                result["voluntary_csw_per_sec"] = vol
+                result["involuntary_csw_per_sec"] = invol
 
     def read(self, interval):
         with self._lock:
@@ -449,24 +455,152 @@ class HackbenchSource:
 
 
 class SysbenchSource:
-    """Runs sysbench cpu and captures events/sec. Supports async start+wait."""
+    """Runs sysbench OLTP (read-only) against a PostgreSQL backend.
 
-    def __init__(self, threads=1):
+    DB must be provisioned out-of-band (server running, user + database
+    created, TCP reachable). We probe reachability; if the server is not
+    reachable or prep fails, sysbench is marked unavailable and the phase
+    is skipped so the rest of the suite keeps running.
+
+    prep() seeds --tables × --table-size rows once per collect() invocation.
+    If sbtest1 already has at least --table-size rows we skip prep to avoid
+    the cost of reseeding on every run.
+    """
+
+    OLTP_SCRIPT = "oltp_read_only"
+
+    def __init__(
+        self,
+        threads=1,
+        db_driver="pgsql",
+        db_host="127.0.0.1",
+        db_port=5432,
+        db_user="sbtest",
+        db_password="sbtest",
+        db_name="sbtest",
+        tables=4,
+        table_size=100000,
+    ):
         self.threads = threads
+        self.db_driver = db_driver
+        self.db_host = db_host
+        self.db_port = db_port
+        self.db_user = db_user
+        self.db_password = db_password
+        self.db_name = db_name
+        self.tables = tables
+        self.table_size = table_size
+        self._prepped = False
+
+    def _db_args(self):
+        return [
+            f"--db-driver={self.db_driver}",
+            f"--pgsql-host={self.db_host}",
+            f"--pgsql-port={self.db_port}",
+            f"--pgsql-user={self.db_user}",
+            f"--pgsql-password={self.db_password}",
+            f"--pgsql-db={self.db_name}",
+            f"--tables={self.tables}",
+            f"--table-size={self.table_size}",
+        ]
+
+    def _db_reachable(self):
+        """pg_isready probe — cheap + doesn't require auth."""
+        if self.db_driver != "pgsql":
+            return False
+        if shutil.which("pg_isready") is None:
+            return True  # can't probe; assume OK and let sysbench fail loud
+        try:
+            rc = subprocess.call(
+                [
+                    "pg_isready",
+                    "-h", str(self.db_host),
+                    "-p", str(self.db_port),
+                    "-U", self.db_user,
+                    "-d", self.db_name,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            return rc == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
 
     def available(self):
-        return shutil.which("sysbench") is not None
+        if shutil.which("sysbench") is None:
+            return False
+        return self._db_reachable()
 
     def name(self):
-        return "sysbench"
+        return f"sysbench oltp ({self.db_driver})"
+
+    def _already_seeded(self):
+        """Cheap: ask sysbench to count rows via prewarm; if it errors, reseed."""
+        if shutil.which("psql") is None:
+            return False
+        env = os.environ.copy()
+        env["PGPASSWORD"] = self.db_password
+        try:
+            out = subprocess.check_output(
+                [
+                    "psql",
+                    "-h", str(self.db_host),
+                    "-p", str(self.db_port),
+                    "-U", self.db_user,
+                    "-d", self.db_name,
+                    "-t", "-A",
+                    "-c", "SELECT COUNT(*) FROM sbtest1",
+                ],
+                stderr=subprocess.DEVNULL,
+                env=env,
+                timeout=10,
+            ).decode().strip()
+            return int(out) >= self.table_size
+        except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return False
+
+    def prep(self, log_dir=None):
+        """Seed sbtest tables if missing. Safe to call multiple times."""
+        if self._prepped:
+            return True
+        if not shutil.which("sysbench"):
+            return False
+        if self._already_seeded():
+            self._prepped = True
+            return True
+
+        cmd = [
+            "sysbench",
+            *self._db_args(),
+            f"--threads={max(1, self.threads)}",
+            self.OLTP_SCRIPT,
+            "prepare",
+        ]
+        log_fh = None
+        stdout = subprocess.DEVNULL
+        if log_dir is not None:
+            log_fh = open(Path(log_dir) / "sysbench_prep.log", "w")
+            stdout = log_fh
+        try:
+            rc = subprocess.call(cmd, stdout=stdout, stderr=subprocess.STDOUT, timeout=600)
+        except (OSError, subprocess.TimeoutExpired):
+            rc = -1
+        finally:
+            if log_fh is not None:
+                log_fh.close()
+        self._prepped = rc == 0
+        return self._prepped
 
     def start(self, duration=10):
         return subprocess.Popen(
             [
                 "sysbench",
-                "cpu",
-                "--threads=" + str(self.threads),
-                "--time=" + str(duration),
+                *self._db_args(),
+                f"--threads={self.threads}",
+                f"--time={duration}",
+                "--report-interval=0",
+                self.OLTP_SCRIPT,
                 "run",
             ],
             stdout=subprocess.PIPE,
@@ -476,11 +610,15 @@ class SysbenchSource:
         )
 
     def parse(self, stdout):
+        out = {}
         for line in stdout.splitlines():
-            m = re.search(r"events per second:\s+([\d.]+)", line)
+            m = re.search(r"transactions:\s+\d+\s+\(([\d.]+)\s+per sec\.\)", line)
             if m:
-                return {"sysbench_events_per_sec": float(m.group(1))}
-        return {}
+                out["sysbench_tps"] = float(m.group(1))
+            m = re.search(r"queries:\s+\d+\s+\(([\d.]+)\s+per sec\.\)", line)
+            if m:
+                out["sysbench_qps"] = float(m.group(1))
+        return out
 
     def run_once(self, duration=10):
         try:
@@ -676,8 +814,24 @@ def collect(args):
     rapl = RaplSource()
     sched_lat = SchedLatencySource(args.sched_latency_bin, log_dir=output_dir)
     hackbench = HackbenchSource(args=hb_args)
-    sysbench = SysbenchSource(threads=sb_threads)
+    sysbench = SysbenchSource(
+        threads=sb_threads,
+        db_driver=getattr(args, "sysbench_db_driver", "pgsql"),
+        db_host=getattr(args, "sysbench_db_host", "127.0.0.1"),
+        db_port=getattr(args, "sysbench_db_port", 5432),
+        db_user=getattr(args, "sysbench_db_user", "sbtest"),
+        db_password=getattr(args, "sysbench_db_password", "sbtest"),
+        db_name=getattr(args, "sysbench_db_name", "sbtest"),
+        tables=getattr(args, "sysbench_tables", 4),
+        table_size=getattr(args, "sysbench_table_size", 100000),
+    )
     schbench = SchbenchSource(level=level, bin_path=schbench_bin)
+
+    # sysbench OLTP needs a seeded DB. Prep once before phases start so
+    # the seed cost isn't charged to the scheduler under test.
+    if sysbench.available():
+        if not sysbench.prep(log_dir=output_dir):
+            print("sysbench prep failed; OLTP phase will be skipped", file=sys.stderr)
 
     # Manage sched_ext scheduler subprocess (needs root).
     sched_proc = None
@@ -785,7 +939,12 @@ def collect(args):
 
         Drain stdout in a background thread — stdout=PIPE with an unread
         pipe deadlocks when a bench fills the 64 KiB kernel buffer.
-        Pre-sample at t=0 so short-lived phases still produce a row.
+
+        Caller is expected to call drain_metrics() right before invoking us
+        so delta-based sources have a fresh baseline. We do NOT emit a row
+        at t=0 — deltas over microseconds are garbage (cpu_util pinning to
+        0 or 100, ctx_switches near-zero). Short-lived phases still yield
+        a summary row with parsed throughput (see below).
         """
         stdout_chunks = []
 
@@ -804,12 +963,6 @@ def collect(args):
         drainer.start()
 
         rows = []
-        # Pre-sample: catches fast-finishing phases (hackbench under 1s).
-        row = sample_row(phase_name, iter_idx)
-        writer.writerow(row)
-        csvfile.flush()
-        rows.append(row)
-
         deadline = time.monotonic() + max_wait
         while proc.poll() is None and not exit_req[0]:
             time.sleep(interval)
@@ -835,17 +988,21 @@ def collect(args):
 
         parsed = parser("".join(stdout_chunks)) if stdout_chunks else {}
 
-        # Stamp throughput onto the last row of this phase so CSV consumers
+        # Stamp throughput onto a synthetic summary row so CSV consumers
         # (visualize.py) can read it without cross-referencing meta.json.
-        if parsed and rows:
-            last = rows[-1]
-            last.update(parsed)
-            # Rewrite CSV tail: simplest is to re-emit; but writer is append-only.
-            # Instead, emit a synthetic summary row with the same phase/iter
-            # and the throughput stamped in. Keeps file monotonic.
+        # Emit even when `rows` is empty — short phases (hackbench <1s)
+        # would otherwise have no CSV trace at all.
+        if parsed:
+            if rows:
+                last_ts = rows[-1]["timestamp"]
+                last_elapsed = rows[-1]["elapsed_s"]
+                rows[-1].update(parsed)
+            else:
+                last_ts = datetime.now().isoformat(timespec="seconds")
+                last_elapsed = round(time.monotonic() - start_time, 2)
             summary = {
-                "timestamp": last["timestamp"],
-                "elapsed_s": last["elapsed_s"],
+                "timestamp": last_ts,
+                "elapsed_s": last_elapsed,
                 "scheduler": scheduler,
                 "phase": phase_name,
                 "iter": iter_idx,
@@ -1007,8 +1164,16 @@ def main():
     )
     parser.add_argument(
         "--sysbench-duration", type=int, default=10,
-        help="sysbench cpu --time seconds (default: 10)",
+        help="sysbench oltp_read_only --time seconds (default: 10)",
     )
+    parser.add_argument("--sysbench-db-driver", default="pgsql")
+    parser.add_argument("--sysbench-db-host", default="127.0.0.1")
+    parser.add_argument("--sysbench-db-port", type=int, default=5432)
+    parser.add_argument("--sysbench-db-user", default="sbtest")
+    parser.add_argument("--sysbench-db-password", default="sbtest")
+    parser.add_argument("--sysbench-db-name", default="sbtest")
+    parser.add_argument("--sysbench-tables", type=int, default=4)
+    parser.add_argument("--sysbench-table-size", type=int, default=100000)
     parser.add_argument(
         "--schbench-duration", type=int, default=30,
         help="schbench -r runtime seconds (default: 30)",

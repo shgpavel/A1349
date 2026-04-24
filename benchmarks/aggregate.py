@@ -82,10 +82,13 @@ def aggregate_timeseries(run_csvs):
 
         # Read sibling meta.json for the sampling interval so cross-run
         # grouping works at any interval, not just 1s.
-        meta_path = Path(path).with_suffix("").with_suffix(".meta.json")
+        csv_path = Path(path)
+        meta_path = csv_path.with_suffix("").with_suffix(".meta.json")
         if not meta_path.exists():
-            # Fallback: scan parent dir for <stem>.meta.json
-            candidates = sorted(Path(path).parent.glob("*.meta.json"))
+            # Fallback: match by stem prefix so composed dirs with multiple
+            # scheduler metas don't hand us the wrong one.
+            stem_prefix = csv_path.stem
+            candidates = sorted(csv_path.parent.glob(f"{stem_prefix}*.meta.json"))
             meta_path = candidates[-1] if candidates else None
         if meta_path and meta_path.exists():
             try:
@@ -176,7 +179,7 @@ def aggregate_oneshot(meta_files):
     """Per-key mean/std/CI across N runs from meta.json oneshot_runs blocks.
 
     collect.py writes `oneshot_runs`: list of dicts (one per iteration), each
-    with scalar throughput keys (hackbench_time_sec, sysbench_events_per_sec,
+    with scalar throughput keys (hackbench_time_sec, sysbench_tps, sysbench_qps,
     schbench_*). We flatten across runs × iterations per key.
     """
     per_key = {}

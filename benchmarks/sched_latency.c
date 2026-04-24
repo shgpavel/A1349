@@ -183,9 +183,13 @@ static void
 csw_delta(const struct csw_counters *curr, struct csw_counters *prev,
 	  struct csw_counters *out)
 {
-	out->total       = curr->total       - prev->total;
-	out->voluntary   = curr->voluntary   - prev->voluntary;
-	out->involuntary = curr->involuntary - prev->involuntary;
+	/*
+	 * Clamp to 0 on underflow (see hist_delta). Per-CPU partial reads
+	 * across hotplug or map reinit could observe prev > curr.
+	 */
+	out->total       = curr->total       >= prev->total       ? curr->total       - prev->total       : 0;
+	out->voluntary   = curr->voluntary   >= prev->voluntary   ? curr->voluntary   - prev->voluntary   : 0;
+	out->involuntary = curr->involuntary >= prev->involuntary ? curr->involuntary - prev->involuntary : 0;
 	*prev = *curr;
 }
 
@@ -252,7 +256,7 @@ print_report(int hist_fd, int csw_fd, int nr_cpus)
 {
 	struct hist curr, dh;
 	struct csw_counters curr_csw, dcsw;
-	char b1[32], b2[32], b3[32];
+	char b1[32], b2[32], b3[32], b4[32];
 	time_t now = time(NULL);
 	struct tm *tm = localtime(&now);
 	char ts[32];
@@ -297,12 +301,15 @@ print_report(int hist_fd, int csw_fd, int nr_cpus)
 			       (unsigned long long)dh.min_ns,
 			       (unsigned long long)dh.max_ns,
 			       (unsigned long long)p99);
-			if (csw_ok)
+			if (csw_ok) {
+				/* CSV csw columns are per-second rates;
+				 * divide interval delta by interval_s. */
+				__u64 denom = interval_s > 0 ? interval_s : 1;
 				printf(",%llu,%llu,%llu",
-				       (unsigned long long)dcsw.total,
-				       (unsigned long long)dcsw.voluntary,
-				       (unsigned long long)dcsw.involuntary);
-			else
+				       (unsigned long long)(dcsw.total / denom),
+				       (unsigned long long)(dcsw.voluntary / denom),
+				       (unsigned long long)(dcsw.involuntary / denom));
+			} else
 				printf(",,,");
 			printf("\n");
 		} else {
@@ -314,7 +321,7 @@ print_report(int hist_fd, int csw_fd, int nr_cpus)
 			       fmt_ns(avg, b1, sizeof(b1)),
 			       fmt_ns(p99, b2, sizeof(b2)),
 			       fmt_ns(dh.min_ns, b3, sizeof(b3)),
-			       fmt_ns(dh.max_ns, ts, sizeof(ts)));
+			       fmt_ns(dh.max_ns, b4, sizeof(b4)));
 		}
 	}
 
