@@ -638,6 +638,28 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	}
 
 	/*
+	 * Wake-latency boost (gated): high-budget waker landing on an
+	 * uncrowded cluster gets vd-gap halved.  Auction-consistent because
+	 * boost fires only when budget ≥ HIGH_PCT (same admission gate as
+	 * P-cluster routing) and only when target queue depth < cluster
+	 * size, so it cannot cascade into the preempt storm that the
+	 * unconditional pre-routing boost produced.
+	 */
+	if ((enq_flags & SCX_ENQ_WAKEUP) && tctx->budget_max) {
+		u64 hi_thresh = (u64)tctx->budget_max * BURST_HIGH_PCT;
+		if (tctx->budget * 100 >= hi_thresh) {
+			u32 cc = (dsq_id == AUCTION_DSQ_P)
+				 ? gdata->p_core_count
+				 : gdata->e_core_count;
+			u64 dq = scx_bpf_dsq_nr_queued(dsq_id);
+			if (cc && dq < cc) {
+				u64 gap = (vd > ve) ? (vd - ve) : 0;
+				vd = ve + (gap >> 1);
+			}
+		}
+	}
+
+	/*
 	 * VCG-pivot estimator update (§I4).  Feed the chosen cluster's φ_hi
 	 * with this task's φ_κ.  Climb instantly on a new maximum, decay by
 	 * EWMA (α = 1/16) otherwise — absent reinforcement, the estimator
