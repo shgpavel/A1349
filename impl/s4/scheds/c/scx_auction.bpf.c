@@ -712,7 +712,48 @@ insert:
 			}
 		}
 		tctx->long_slice = is_long;
-		scx_bpf_dsq_insert_vtime(p, dsq_id, slice_ns, vd, enq_flags);
+
+		/*
+		 * Cache-warm pinning (model extension §X.5):
+		 *   On WAKEUP, if the task's previous CPU is in the same
+		 *   cluster as the routed dsq_id and is in the task's allowed
+		 *   set, queue directly into that CPU's local runqueue
+		 *   (SCX_DSQ_LOCAL_ON) instead of the shared cluster DSQ.  The
+		 *   task lands on its cache-warm core (L1/L2/L3 still hot)
+		 *   rather than getting work-stolen onto a peer CPU and
+		 *   eating the migration penalty.
+		 *
+		 *   Skip in two cases:
+		 *     1. Non-WAKEUP enqueue (preempt re-enqueue) — task didn't
+		 *        sleep, scheduler is just rotating it; cluster DSQ keeps
+		 *        load balanced.
+		 *     2. STARVED queue (dsq_id == STARVED) — starvation
+		 *        ordering is global, must funnel through DSQ.
+		 */
+		bool pinned = false;
+		if ((enq_flags & SCX_ENQ_WAKEUP) &&
+		    dsq_id != AUCTION_DSQ_STARVED) {
+			s32 prev_cpu = scx_bpf_task_cpu(p);
+			if (prev_cpu >= 0) {
+				u32 pkey = (u32)prev_cpu;
+				u8 *flag = bpf_map_lookup_elem(&cpu_is_p, &pkey);
+				bool prev_is_p = flag && *flag;
+				bool match = (dsq_id == AUCTION_DSQ_P)
+					     ? prev_is_p : !prev_is_p;
+				if (match &&
+				    bpf_cpumask_test_cpu(prev_cpu,
+							 p->cpus_ptr)) {
+					scx_bpf_dsq_insert_vtime(
+						p,
+						SCX_DSQ_LOCAL_ON | prev_cpu,
+						slice_ns, vd, enq_flags);
+					pinned = true;
+				}
+			}
+		}
+		if (!pinned)
+			scx_bpf_dsq_insert_vtime(p, dsq_id, slice_ns, vd,
+						 enq_flags);
 	}
 
 	/*
