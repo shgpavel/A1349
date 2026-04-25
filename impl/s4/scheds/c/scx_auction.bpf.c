@@ -68,7 +68,7 @@ char _license[] SEC("license") = "GPL";
  * Routing is re-evaluated only on wake-up; preempt re-enqueues always keep
  * the existing cluster to eliminate P↔E flip-flop during a running stretch.
  */
-#define BURST_HIGH_PCT      70     /* ≥ 70% budget → bursty → P-core         */
+#define BURST_HIGH_PCT      80     /* ≥ 80% budget → bursty → P-core         */
 #define BURST_LOW_PCT       30     /* < 30% budget → cpu-bound → E-core      */
 
 /*
