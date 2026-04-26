@@ -731,6 +731,7 @@ insert:
 		 *        ordering is global, must funnel through DSQ.
 		 */
 		bool pinned = false;
+		s32 pinned_cpu = -1;
 		if ((enq_flags & SCX_ENQ_WAKEUP) &&
 		    dsq_id != AUCTION_DSQ_STARVED) {
 			s32 prev_cpu = scx_bpf_task_cpu(p);
@@ -748,12 +749,27 @@ insert:
 						SCX_DSQ_LOCAL_ON | prev_cpu,
 						slice_ns, vd, enq_flags);
 					pinned = true;
+					pinned_cpu = prev_cpu;
 				}
 			}
 		}
 		if (!pinned)
 			scx_bpf_dsq_insert_vtime(p, dsq_id, slice_ns, vd,
 						 enq_flags);
+
+		/*
+		 * Targeted kick when pinned: if prev_cpu is idle, kick it
+		 * directly so the cache-warm task starts running without
+		 * waiting for tick.  Skip the generic pick_idle_cpu probe in
+		 * that case — it could pick a *different* idle CPU which has
+		 * nothing in its local DSQ (task is already pinned to
+		 * prev_cpu), wasting a wake and warming a cold L1/L2.
+		 */
+		if (pinned && pinned_cpu >= 0 &&
+		    scx_bpf_test_and_clear_cpu_idle(pinned_cpu)) {
+			scx_bpf_kick_cpu(pinned_cpu, SCX_KICK_IDLE);
+			return;
+		}
 	}
 
 	/*
