@@ -105,7 +105,7 @@ char _license[] SEC("license") = "GPL";
  * the "consumed = slice − p->scx.slice" arithmetic.
  */
 #define AUCTION_SLICE_P     (SCX_SLICE_DFL ?: 20000000ULL)
-#define AUCTION_SLICE_E     (2ULL * (SCX_SLICE_DFL ?: 20000000ULL))
+#define AUCTION_SLICE_E     (3ULL * (SCX_SLICE_DFL ?: 20000000ULL) / 2)
 #define AUCTION_SLICE_MAX   AUCTION_SLICE_E   /* for magnitude-only math */
 
 /* DSQ ids */
