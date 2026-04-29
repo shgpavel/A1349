@@ -113,6 +113,23 @@
         bottom=2mm
 }
 
+\newtcolorbox{shadowbox4}{
+        enhanced,
+        colback=NearWhite,
+        colframe=white,
+        boxrule=0pt,
+        arc=4pt,
+        outer arc=4pt,
+        fuzzy shadow={
+        0mm}{-1.3mm}{0mm}{0.3mm}{black!30
+        },
+        coltext=NearBlack,
+        left=4mm,
+        right=4mm,
+        top=2mm,
+        bottom=2mm
+}
+
 \newtcolorbox{shadowbox3}{
         enhanced,
         colback=NearWhite,
@@ -367,6 +384,45 @@
 \end{frame}
 
 
+\begin{frame}{sched\_ext}
+        \vspace{-0.6em}
+        \begin{shadowbox4}
+                \footnotesize \textbf{sched\_ext} (scheduler extensions)~---
+                инфраструктура ядра Linux, позволяющая реализовывать
+                политику планирования как eBPF-программу,
+                подключаемую к интерфейсу расширяемых планировщиков без пересборки ядра
+        \end{shadowbox4}
+        \vspace{-0.6em}
+
+        \begin{columns}[T]
+                \column{0.74\textwidth}
+                \centering
+                \includegraphics[width=\linewidth,height=0.67\textheight,keepaspectratio]{res/sched_ext.pdf}\\[-0.8em]
+                {\tiny \textbf{Рис.~1.} Механизм работы sched\_ext}
+
+                \column{0.26\textwidth}
+                \vspace{0.7em}
+                \textbf{\footnotesize DSQ} {\scriptsize(dispatch queue)}
+                {\scriptsize
+                        \begin{itemize}\setlength{\itemsep}{0pt}
+                                \item \texttt{SCX\_DSQ\_LOCAL}
+                                \item \texttt{SCX\_DSQ\_GLOBAL}
+                                \item пользовательские DSQ
+                \end{itemize}}
+
+                \vspace{0.2em}
+                \textbf{\footnotesize Цикл планирования}
+                {\scriptsize
+                        \begin{itemize}\setlength{\itemsep}{0pt}
+                                \item \texttt{select\_cpu}
+                                \item \texttt{enqueue}
+                                \item \texttt{dispatch}
+                                \item \texttt{running} / \texttt{stopping}
+                \end{itemize}}
+        \end{columns}
+\end{frame}
+
+
 \begin{frame}{Маршрутизация задач}
         \textbf{Сигнал маршрутизации}~-- отношение бюджета
         $\rho_i = B_i / B_i^{\max}$
@@ -434,56 +490,6 @@
                 / D_{\text{rep}}$ играет роль, аналогичную пороговому
                 правилу Майерсона в одномерных аукционах
         \end{shadowbox}
-\end{frame}
-
-
-\begin{frame}{sched\_ext}
-        \begin{shadowbox2}
-                \small \textbf{sched\_ext} (scheduler extensions)~--
-                инфраструктура ядра Linux, позволяющая реализовывать
-                политику планирования как eBPF-программу,
-                подключаемую к хукам планировщика без пересборки ядра
-        \end{shadowbox2}
-
-        \vspace{0.3em}
-        \begin{columns}[T]
-                \column{0.50\textwidth}
-                % TODO(tasks/scx_diagram.md): заменить на схему sched_ext
-                % (DSQ, цикл select_cpu/enqueue/dispatch). Текущая
-                % картинка иллюстрирует eBPF на сетевом стеке.
-                \vspace{0.3em}
-                \centering
-                \includegraphics[width=\linewidth]{../0212/res/libbpf.png}
-
-                \vspace{0.1em}
-                {\tiny \textbf{Рис.~1.} eBPF как общая инфраструктура
-                ядра Linux}
-
-                \column{0.50\textwidth}
-                \textbf{DSQ} (dispatch queue):
-                {\footnotesize
-                        \begin{itemize}
-                                \item \texttt{SCX\_DSQ\_LOCAL}~--
-                                        локальная очередь ядра
-                                \item \texttt{SCX\_DSQ\_GLOBAL}~--
-                                        общая очередь
-                                \item пользовательские DSQ по любому критерию
-                \end{itemize}}
-
-                \vspace{0.2em}
-                \textbf{Цикл планирования}
-                {\footnotesize
-                        \begin{itemize}
-                                \item \texttt{select\_cpu}~-- выбор
-                                        свободного ядра
-                                \item \texttt{enqueue}~-- помещение
-                                        задачи в DSQ
-                                \item \texttt{dispatch}~-- перенос в
-                                        локальный DSQ
-                                \item \texttt{running} / \texttt{stopping}~--
-                                        обновление vtime
-                \end{itemize}}
-        \end{columns}
 \end{frame}
 
 
@@ -619,7 +625,27 @@
 
 
 \begin{frame}{Выводы}
-        
+        \begin{itemize}\setlength{\itemsep}{0.4em}
+                \item Распределение слотов P/E\nobreakdash-ядер
+                        формализовано как динамический аукцион VCG:
+                        состояние, действие, эффективная ценность
+                        $\phi_\kappa$, платёж по pivot\nobreakdash-правилу.
+                        Обоснованы стимульная совместимость в
+                        пределах класса, индивидуальная рациональность
+                        и бюджетное ограничение
+                \item Механизм реализован как BPF\nobreakdash-планировщик
+                        \texttt{scx\_auction} поверх \texttt{sched\_ext}
+                        (DSQ\_P / DSQ\_E / DSQ\_Starved, маршрутизация
+                        по $\rho_i$, прирост бюджета за idle как аналог
+                        порогового правила Майерсона)
+                \item На Intel Core Ultra 7 265K (8P+12E) получено
+                        лучшее время hackbench (8.43\,s, $-9\%$ к
+                        Linux~EEVDF) и наименьшая средняя длительность
+                        сна (26\,ms). Sysbench и энергопотребление
+                        сопоставимы, p99 sched\nobreakdash-delay
+                        проигрывает scx\_LAVD~-- очередное направление
+                        работы
+        \end{itemize}
 \end{frame}
 
 
@@ -659,11 +685,6 @@
                 Earliest Eligible Virtual Deadline First: A Flexible and
                 Accurate Mechanism for Proportional Share Resource Allocation.
                 Old Dominion University, 1996
-
-                \bibitem{schedext_arxiv}
-                Agrawal~A., Banerjee~S., Barford~P. et~al.
-                sched\_ext: A BPF-extensible Linux Scheduler.
-                arXiv:2408.01997, 2024
 
                 \bibitem{ghost}
                 Humphries~J.\,T., Natu~N., Chaugule~A. et~al.

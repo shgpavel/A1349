@@ -78,6 +78,15 @@ char _license[] SEC("license") = "GPL";
  */
 #define STARVE_PHI_DIV      1000ULL /* ns-φ deficit → vd penalty units        */
 
+/*
+ * Upper bound for dsq_phi_hi_κ.  pivot_based at stopping computes
+ *   phi_hi * consumed / slice_cluster / slice_cluster
+ * with consumed ≤ AUCTION_SLICE_E ≈ 3e7.  Cap φ_hi at 1<<40 ≈ 1e12 so the
+ * multiplication phi_hi * consumed ≤ 3e19 stays inside u64 even for
+ * heavy-nice bursts (weight=49152 × slice=2e7 = 1e12).
+ */
+#define AUCTION_PHI_HI_CAP  (1ULL << 40)
+
 /* virtual-time arithmetic (matches s3+) */
 #define SCALE               100
 #define INV_SHIFT           20
@@ -116,36 +125,32 @@ char _license[] SEC("license") = "GPL";
 /* ── BPF maps ────────────────────────────────────────────────────────────── */
 
 /*
- * Global scheduler context.  Populated by userspace before attach.
- *   max_capacity — highest cpu_capacity value across online CPUs
- *   min_capacity — lowest cpu_capacity value (used to compute σ)
- *   cost_p / cost_e — per-quantum costs (override C_P_DEF / C_E_DEF at runtime)
+ * Global scheduler config — RW userspace, RO BPF.  Populated before attach.
+ * Split from runtime state so periodic userspace refresh cannot race-stomp
+ * BPF-side estimators (vtime, total_weight, φ_hi).
  */
 struct auction_ctx {
-	u64 vtime_now;
-	u64 total_weight;
 	u32 max_capacity;
 	u32 min_capacity;
 	u32 cost_p;
 	u32 cost_e;
 	u32 p_core_count;   /* #CPUs classified as P-cluster (cap ≥ 90% max)    */
 	u32 e_core_count;   /* #CPUs classified as E-cluster                    */
-	/*
-	 * Per-cluster running estimator of max positive φ observed at enqueue.
-	 * Feeds VCG-pivot approximation in auction_stopping (§I4):
-	 *   payment = max(cost_based, pivot_based), pivot_based ∝ φ_hi_κ.
-	 * Updated on every enqueue: climb instantly, decay by EWMA (α=1/16).
-	 */
+};
+
+/*
+ * Runtime state — RW BPF only.  Userspace MUST NOT update this map.
+ *   vtime_now / total_weight — global EEVDF state.
+ *   dsq_phi_hi_κ — per-cluster running estimator of max positive φ observed
+ *     at enqueue.  Feeds VCG-pivot approximation in auction_stopping (§I4):
+ *     payment = max(cost_based, pivot_based), pivot_based ∝ φ_hi_κ.
+ *     Updated on every enqueue: climb instantly, decay by EWMA (α=1/16).
+ */
+struct auction_runtime {
+	u64 vtime_now;
+	u64 total_weight;
 	u64 dsq_phi_hi_p;
 	u64 dsq_phi_hi_e;
-	/*
-	 * Precomputed fixed-point σ·cost_e in Q20 format:
-	 *   cost_e_sigma_q20 = (cost_e * max_cap << 20) / min_cap
-	 * Lets compute_phi avoid per-call 64-bit divide:
-	 *   cost_e_ns = cost_e_sigma_q20 * len_est_ns >> 20
-	 * Userspace refreshes on capacity/cost change.
-	 */
-	u64 cost_e_sigma_q20;
 };
 
 struct {
@@ -154,6 +159,13 @@ struct {
 	__uint(key_size, sizeof(u32));
 	__uint(value_size, sizeof(struct auction_ctx));
 } global_data SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(key_size, sizeof(u32));
+	__uint(value_size, sizeof(struct auction_runtime));
+} runtime_data SEC(".maps");
 
 /* Per-CPU capacity, populated from /sys/.../cpu_capacity by userspace. */
 struct {
@@ -194,9 +206,10 @@ struct auction_task_ctx {
 	u64 last_cluster_change_ns; /* cooldown timestamp (model ext §X.22) */
 	u32 weight_cached;
 	u32 inv_weight;
+	s32 wake_prev_cpu; /* prev_cpu captured in select_cpu, -1 if unset */
 	u8  on_p_type;
 	u8  long_slice;   /* 1 if granted AUCTION_SLICE_E, 0 otherwise */
-	u8  _pad[6];
+	u8  _pad[2];
 };
 
 struct {
@@ -213,6 +226,13 @@ get_ctx(void)
 {
 	u32 key = 0;
 	return bpf_map_lookup_elem(&global_data, &key);
+}
+
+static __always_inline struct auction_runtime *
+get_rt(void)
+{
+	u32 key = 0;
+	return bpf_map_lookup_elem(&runtime_data, &key);
 }
 
 static __always_inline struct auction_task_ctx *
@@ -300,73 +320,57 @@ signed_div(s64 num, u64 den)
 }
 
 static __always_inline void
-add_vtime(struct auction_ctx *gdata, s64 delta)
+add_vtime(struct auction_runtime *rt, s64 delta)
 {
+	if (!rt)
+		return;
 	if (delta >= 0) {
 		u64 add = (u64)delta;
-		gdata->vtime_now = (gdata->vtime_now > (~0ULL - add))
-				   ? ~0ULL
-				   : gdata->vtime_now + add;
+		rt->vtime_now = (rt->vtime_now > (~0ULL - add))
+				? ~0ULL
+				: rt->vtime_now + add;
 	} else {
 		u64 sub = abs_s64(delta);
-		gdata->vtime_now = (gdata->vtime_now > sub)
-				   ? gdata->vtime_now - sub
-				   : 0;
+		rt->vtime_now = (rt->vtime_now > sub)
+				? rt->vtime_now - sub
+				: 0;
 	}
 }
 
 /*
- * Compute per-task effective values φ_P and φ_E (model §5.2).
+ * Compute per-task effective values φ_P and φ_E (model §5.2, fixed).
  *
  * Continuous ns formulation — no quantization to integer quanta:
  *
- *   φ_P = weight * slice - C_P * len_est_ns
- *   φ_E = weight * slice - C_E * len_est_ns * σ    σ = max_cap / min_cap
+ *   φ_P = weight * slice          - C_P * len_est_ns
+ *   φ_E = weight * slice * (1/σ)  - C_E * len_est_ns        σ = max_cap/min_cap
  *
- * weight is scaled by slice so both terms share nanosecond units.
- * φ > 0: task has positive net value on that core type.
- * φ < 0: cost exceeds value — task is consuming more than it contributes.
+ * σ moved to the value side: an E-cluster ns delivers 1/σ as much work
+ * (capacity-normalised), so the *value* of a slice on E is discounted, not the
+ * cost.  This produces a meaningful argmax(φ) crossover:
+ *   φ_P ≥ φ_E  ⇔  weight·slice·(σ-1)/σ  ≥  (C_P - C_E)·len_est_ns
+ * — short / high-weight tasks favour P, long / cpu-bound tasks favour E.
  *
- * P/E allocation decision: φ_P ≥ φ_E iff C_E * σ ≥ C_P (length cancels
- * in the comparison, so the crossover is set by topology + cost parameters).
- * The magnitude of φ now varies continuously with len_est_ns, enabling
- * proportional starvation ordering and future priority modulation.
+ * Common slice reference (AUCTION_SLICE_P) so the slice-asymmetry term doesn't
+ * floor the comparison toward E.  Cluster-conditioned slice grants are still
+ * applied at insert time and at payment normalisation.
  *
- * Overflow: max(weight)=49152, slice=5e6 → weight*slice ≈ 2.5e11 < s64_max.
- *           max(C_E * len * max_cap) = 256 * 5e6 * 2048 ≈ 2.6e12 < u64_max.
+ * Overflow: max(weight)=49152, slice=20e6 → weight*slice ≈ 1e12 < s64_max.
+ *           max(C_P · len) = 1024 · 20e6 = 2e10, fits u64 easily.
  */
 static __always_inline void
 compute_phi(u32 weight, u64 len_est_ns,
 	    u32 max_cap, u32 min_cap,
 	    u32 cost_p, u32 cost_e,
-	    u64 cost_e_sigma_q20,
 	    s64 *phi_p_out, s64 *phi_e_out)
 {
-	/*
-	 * Cluster-conditioned valuation (§X.2): φ_κ uses the slice
-	 * that tasks in cluster κ are actually granted, so the
-	 * "value of a full slice" term matches the CPU-time the
-	 * allocation will yield.  Keeps φ_P vs φ_E crossover valid
-	 * while letting E-cluster tasks earn credit proportional to
-	 * their longer run-window.
-	 */
-	u64 w_slice_p  = (u64)weight * AUCTION_SLICE_P;
-	u64 w_slice_e  = (u64)weight * AUCTION_SLICE_E;
-	u64 cost_p_ns  = (u64)cost_p * len_est_ns;
-	/*
-	 * C_E * len_ns * σ computed via precomputed fixed-point:
-	 *   cost_e_sigma_q20 = (cost_e * max_cap << 20) / min_cap
-	 * → cost_e_ns = cost_e_sigma_q20 * len_est_ns >> 20
-	 * Fallback path (userspace didn't populate) keeps the original
-	 * multiply-divide for correctness.
-	 */
-	u64 cost_e_ns;
-	if (cost_e_sigma_q20) {
-		cost_e_ns = (cost_e_sigma_q20 * len_est_ns) >> 20;
-	} else {
-		u32 mc = min_cap ? min_cap : CAPACITY_SCALE;
-		cost_e_ns = (u64)cost_e * len_est_ns * (u64)max_cap / (u64)mc;
-	}
+	u32 mx        = max_cap ? max_cap : CAPACITY_SCALE;
+	u32 mc        = min_cap ? min_cap : mx;
+	u64 w_slice_p = (u64)weight * AUCTION_SLICE_P;
+	/* value on E discounted by 1/σ = min_cap/max_cap. */
+	u64 w_slice_e = w_slice_p * (u64)mc / (u64)mx;
+	u64 cost_p_ns = (u64)cost_p * len_est_ns;
+	u64 cost_e_ns = (u64)cost_e * len_est_ns;
 
 	*phi_p_out = (s64)w_slice_p - (s64)cost_p_ns;
 	*phi_e_out = (s64)w_slice_e - (s64)cost_e_ns;
@@ -407,34 +411,26 @@ BPF_STRUCT_OPS(auction_select_cpu,
 {
 	bool is_idle = false;
 	s32 cpu;
+	struct auction_task_ctx *tctx;
 
 	cpu = scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, &is_idle);
 
 	/*
+	 * Stash the *true* prev_cpu for auction_enqueue's cache-warm pin
+	 * path.  scx_bpf_task_cpu(p) at enqueue is unreliable (returns the
+	 * task's currently-assigned CPU, not the wake source), so the only
+	 * reliable place to capture prev_cpu is here.
+	 */
+	tctx = get_task_ctx(p, false);
+	if (tctx)
+		tctx->wake_prev_cpu = prev_cpu;
+
+	/*
 	 * If dfl didn't find an idle CPU, enqueue path will handle routing.
 	 * Skip cluster-preference work; there's nothing to improve.
-	 *
-	 * Previously this path did a second scx_bpf_pick_idle_cpu() scan
-	 * whenever dfl's idle hit was in the "wrong" cluster, then discarded
-	 * it if the alt was also wrong cluster — consuming an idle bit for
-	 * no benefit.  Benchmarks showed work conservation (use dfl's idle
-	 * CPU regardless of cluster) beats spending a scan per wakeup.
-	 * Cluster preference is still enforced at enqueue-time routing for
-	 * non-idle wakeups.
 	 */
 	if (cpu >= 0 && is_idle) {
-		/*
-		 * Clear long_slice before local dispatch: this path always
-		 * grants SLICE_P.  Leaving a stale 1 (from a prior E-cluster
-		 * enqueue that got SLICE_E) would make auction_stopping
-		 * compute consumed against SLICE_E = double the real grant,
-		 * over-charging the budget and driving the task toward
-		 * AUCTION_DSQ_STARVED.  tctx is created on first enqueue,
-		 * which has always preceded the first select_cpu for an
-		 * active task — if it hasn't yet, this grant carries no
-		 * mis-accounting risk because long_slice defaults to 0.
-		 */
-		struct auction_task_ctx *tctx = get_task_ctx(p, false);
+		/* Clear long_slice — local dispatch always grants SLICE_P. */
 		if (tctx)
 			tctx->long_slice = 0;
 		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, AUCTION_SLICE_P, 0);
@@ -446,13 +442,14 @@ BPF_STRUCT_OPS(auction_select_cpu,
 void
 BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 {
-	struct auction_ctx     *gdata = get_ctx();
-	struct auction_task_ctx *tctx = get_task_ctx(p, true);
+	struct auction_ctx      *gdata = get_ctx();
+	struct auction_runtime  *rt    = get_rt();
+	struct auction_task_ctx *tctx  = get_task_ctx(p, true);
 	u32 max_cap, weight;
 	u64 v_now, ve, q_max, min_ve, vd;
 	u64 dsq_id;
 
-	if (!gdata || !tctx)
+	if (!gdata || !rt || !tctx)
 		return;
 
 	max_cap = gdata->max_capacity ?: CAPACITY_SCALE;
@@ -473,7 +470,7 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	 * latency control.  Using SLICE_MAX doubles the gap, loosens deadlines,
 	 * and regresses wake/request p99 under contention.
 	 */
-	v_now  = gdata->vtime_now;
+	v_now  = rt->vtime_now;
 	ve     = p->scx.dsq_vtime;
 	q_max  = (u64)max_cap * AUCTION_SLICE_P / CAPACITY_SCALE;
 	min_ve = (v_now > q_max) ? (v_now - q_max) : 0;
@@ -519,8 +516,7 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	s64 phi_p, phi_e;
 
 	compute_phi(weight, en_len_est, max_cap, en_min_cap,
-		    en_cost_p, en_cost_e, gdata->cost_e_sigma_q20,
-		    &phi_p, &phi_e);
+		    en_cost_p, en_cost_e, &phi_p, &phi_e);
 
 	/*
 	 * Budget check: exhausted tasks → AUCTION_DSQ_STARVED.
@@ -542,30 +538,32 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	}
 
 	/*
-	 * Routing with hysteresis + stickiness:
-	 *   - On preempt re-enqueue (no WAKEUP), keep previous cluster — avoids
-	 *     migrations while a task is simply time-slicing.
-	 *   - On wake-up, re-route only if budget has crossed HIGH or LOW band;
-	 *     inside the 30–70% deadband, keep previous cluster.
-	 *   - First enqueue (last_stop_ns==0): treat as wake-up; default P.
+	 * Routing: argmax(φ_κ) — the auction's actual cluster decision (§5.2).
+	 *   - Preempt re-enqueue (no WAKEUP): keep previous cluster to avoid
+	 *     mid-run migrations while time-slicing.
+	 *   - Wake-up: pick cluster with higher φ.  Tie → keep previous.
+	 *
+	 * Hysteresis (avoids ping-pong on near-tie φ values):
+	 *   re-route only if the φ margin in the *opposite* direction exceeds
+	 *   PHI_HYST of the larger φ magnitude.  Inside this band, keep sticky.
 	 */
 	bool is_wakeup  = (enq_flags & SCX_ENQ_WAKEUP) || !tctx->last_stop_ns;
 	bool want_p_enq = tctx->on_p_type; /* sticky default */
 	u8   prev_on_p  = tctx->on_p_type;
 
-	if (is_wakeup && tctx->budget_max) {
-		u64 num = tctx->budget * 100;
-		u64 hi  = (u64)tctx->budget_max * BURST_HIGH_PCT;
-		u64 lo  = (u64)tctx->budget_max * BURST_LOW_PCT;
+	if (is_wakeup) {
+		s64 diff   = phi_p - phi_e;
+		u64 margin = abs_s64(diff);
+		s64 phi_max = (phi_p > phi_e) ? phi_p : phi_e;
+		u64 hyst   = phi_max > 0 ? (u64)phi_max / 16 : 0; /* 6.25% band */
 
-		if (num >= hi)
+		if (margin >= hyst) {
+			want_p_enq = (diff >= 0);
+		} else if (!tctx->last_stop_ns) {
+			/* First enqueue with no history: φ tie ⇒ default P. */
 			want_p_enq = true;
-		else if (num < lo)
-			want_p_enq = false;
-		/* else keep sticky on_p_type */
-	} else if (is_wakeup) {
-		/* No budget info yet (new task) — prefer P. */
-		want_p_enq = true;
+		}
+		/* else: inside hysteresis band, keep sticky on_p_type. */
 	}
 
 	/*
@@ -693,13 +691,18 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 		s64 phi_k   = (dsq_id == AUCTION_DSQ_P) ? phi_p : phi_e;
 		u64 phi_new = (phi_k > 0) ? (u64)phi_k : 0;
 		u64 *phi_hi = (dsq_id == AUCTION_DSQ_P)
-			      ? &gdata->dsq_phi_hi_p
-			      : &gdata->dsq_phi_hi_e;
+			      ? &rt->dsq_phi_hi_p
+			      : &rt->dsq_phi_hi_e;
 
 		if (phi_new > *phi_hi)
 			*phi_hi = phi_new;
 		else
 			*phi_hi = (*phi_hi * 15 + phi_new) >> 4;
+		/* Clamp to bound the pivot multiply at stopping (line 974
+		 * in original): phi_hi * consumed must fit u64 even for
+		 * heavy-nice tasks bursting weight*slice. */
+		if (*phi_hi > AUCTION_PHI_HI_CAP)
+			*phi_hi = AUCTION_PHI_HI_CAP;
 	}
 
 insert:
@@ -771,7 +774,10 @@ insert:
 		bool pinned = false;
 		if ((enq_flags & SCX_ENQ_WAKEUP) &&
 		    dsq_id != AUCTION_DSQ_STARVED) {
-			s32 prev_cpu = scx_bpf_task_cpu(p);
+			/* Use prev_cpu captured in select_cpu, not the
+			 * task's currently-assigned CPU. */
+			s32 prev_cpu = tctx->wake_prev_cpu;
+			tctx->wake_prev_cpu = -1;  /* consume */
 			if (prev_cpu >= 0) {
 				u32 pkey = (u32)prev_cpu;
 				u8 *flag = bpf_map_lookup_elem(&cpu_is_p, &pkey);
@@ -860,14 +866,14 @@ BPF_STRUCT_OPS(auction_dispatch, s32 cpu, struct task_struct *prev)
 void
 BPF_STRUCT_OPS(auction_running, struct task_struct *p)
 {
-	struct auction_ctx *gdata = get_ctx();
+	struct auction_runtime *rt = get_rt();
 
-	if (!gdata)
+	if (!rt)
 		return;
 
 	/* Advance global vtime floor (same as s3+). */
-	if (time_before(gdata->vtime_now, p->scx.dsq_vtime))
-		gdata->vtime_now = p->scx.dsq_vtime;
+	if (time_before(rt->vtime_now, p->scx.dsq_vtime))
+		rt->vtime_now = p->scx.dsq_vtime;
 }
 
 void
@@ -875,8 +881,9 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 {
 	u32 cpu    = bpf_get_smp_processor_id();
 	u32 cap    = get_cpu_cap(cpu);
-	struct auction_ctx     *gdata = get_ctx();
-	struct auction_task_ctx *tctx = get_task_ctx(p, false);
+	struct auction_ctx      *gdata = get_ctx();
+	struct auction_runtime  *rt    = get_rt();
+	struct auction_task_ctx *tctx  = get_task_ctx(p, false);
 	u64 consumed, svc_vtime;
 	u32 weight;
 	u32 cost_p, cost_e;
@@ -910,8 +917,8 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 	svc_vtime = consumed * cap * SCALE / CAPACITY_SCALE;
 	p->scx.dsq_vtime += div_by_weight(svc_vtime, weight, tctx);
 
-	if (gdata->total_weight)
-		gdata->vtime_now += svc_vtime / gdata->total_weight;
+	if (rt && rt->total_weight)
+		rt->vtime_now += svc_vtime / rt->total_weight;
 
 	/*
 	 * Budget payment — VCG-pivot approximation (§6.2 / §I4).
@@ -960,7 +967,7 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 
 		u64 cost_based = (u64)cost_kappa * consumed / slice_granted;
 
-		u64 phi_hi     = is_p ? gdata->dsq_phi_hi_p : gdata->dsq_phi_hi_e;
+		u64 phi_hi     = rt ? (is_p ? rt->dsq_phi_hi_p : rt->dsq_phi_hi_e) : 0;
 		/*
 		 * φ_hi has units of weight·slice (ns weighted).  Normalise to
 		 * per-quantum budget units:
@@ -1015,24 +1022,24 @@ update_len:
 s32
 BPF_STRUCT_OPS(auction_set_weight, struct task_struct *p, u32 new_weight)
 {
-	struct auction_ctx     *gdata = get_ctx();
+	struct auction_runtime  *rt = get_rt();
 	struct auction_task_ctx *tctx;
 	u32 old_weight;
 	u64 old_sum;
 	s64 lag, diff;
 
-	if (!gdata)
+	if (!rt)
 		return 0;
 
 	old_weight = p->scx.weight ?: 1;
 	if (!new_weight)
 		new_weight = 1;
 
-	old_sum = gdata->total_weight;
+	old_sum = rt->total_weight;
 
-	if (gdata->total_weight >= old_weight)
-		gdata->total_weight -= old_weight;
-	gdata->total_weight += new_weight;
+	if (rt->total_weight >= old_weight)
+		rt->total_weight -= old_weight;
+	rt->total_weight += new_weight;
 
 	tctx = get_task_ctx(p, true);
 	if (tctx) {
@@ -1043,13 +1050,13 @@ BPF_STRUCT_OPS(auction_set_weight, struct task_struct *p, u32 new_weight)
 		refresh_inv_weight(tctx, new_weight);
 	}
 
-	u64 new_sum = gdata->total_weight;
+	u64 new_sum = rt->total_weight;
 	if (!old_sum || !new_sum)
 		return 0;
 
-	lag  = (s64)gdata->vtime_now - (s64)p->scx.dsq_vtime;
+	lag  = (s64)rt->vtime_now - (s64)p->scx.dsq_vtime;
 	diff = signed_div(lag, old_sum) - signed_div(lag, new_sum);
-	add_vtime(gdata, diff);
+	add_vtime(rt, diff);
 
 	return 0;
 }

@@ -191,20 +191,28 @@ def time_mean_ci(csv_path, base_col):
 # ---------------------------------------------------------------------------
 
 
+BASELINE_SCHED = "default"
+
+
 def grouped_bar(ax, scheds, levels, values, errs_lo, errs_hi, title, ylabel, lower_better):
-    """values[sched][level] = float; errs_* same shape."""
+    """values[sched][level] = float; errs_* same shape.
+
+    Annotates each bar with its value on top, plus a %-diff-vs-baseline
+    (Linux EEVDF / `default`) inside the bar — same style as figure_combined.
+    """
     n_lvl = len(levels)
     width = 0.8 / n_lvl
     x = np.arange(len(scheds))
 
     lvl_colors = plt.cm.viridis(np.linspace(0.15, 0.85, n_lvl))
 
+    bar_specs = []  # (rect, sched, lvl, val)
     for i, lvl in enumerate(levels):
         vals = [values[s].get(lvl, np.nan) for s in scheds]
         elo = [errs_lo[s].get(lvl, 0) for s in scheds]
         ehi = [errs_hi[s].get(lvl, 0) for s in scheds]
         offsets = x - 0.4 + width * (i + 0.5)
-        ax.bar(
+        rects = ax.bar(
             offsets,
             vals,
             width,
@@ -216,6 +224,48 @@ def grouped_bar(ax, scheds, levels, values, errs_lo, errs_hi, title, ylabel, low
             capsize=3,
             error_kw={"elinewidth": 0.8},
         )
+        for rect, s, v in zip(rects, scheds, vals, strict=True):
+            bar_specs.append((rect, s, lvl, v))
+
+    # Value on top + %-diff-vs-baseline inside non-baseline bars.
+    fontsize_val = max(5, 7 - n_lvl // 2)
+    for rect, sched, lvl, val in bar_specs:
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            continue
+        h = rect.get_height()
+        cx = rect.get_x() + rect.get_width() / 2
+        # Value label on top
+        ax.text(
+            cx,
+            h,
+            f"{val:.2f}" if abs(val) < 1000 else f"{val:.0f}",
+            ha="center",
+            va="bottom",
+            fontsize=fontsize_val,
+            fontweight="bold",
+            color="#000000",
+        )
+        # %-diff vs baseline at same level
+        if sched == BASELINE_SCHED:
+            continue
+        base = values.get(BASELINE_SCHED, {}).get(lvl)
+        if base is None or (isinstance(base, float) and (np.isnan(base) or base == 0)):
+            continue
+        pct = (val - base) / abs(base) * 100
+        ax.text(
+            cx,
+            h * 0.5,
+            f"{pct:+.1f}%",
+            ha="center",
+            va="center",
+            fontsize=fontsize_val,
+            fontweight="bold",
+            color="#000000",
+        )
+
+    # Headroom for top labels.
+    ymin, ymax = ax.get_ylim()
+    ax.set_ylim(ymin, ymax * 1.15)
 
     note = (
         " (lower is better)"
@@ -227,7 +277,7 @@ def grouped_bar(ax, scheds, levels, values, errs_lo, errs_hi, title, ylabel, low
     ax.set_xticks(x)
     ax.set_xticklabels([label_for(s) for s in scheds], rotation=0, fontsize=8)
     ax.grid(True, alpha=0.3, axis="y")
-    ax.legend(title="Level", fontsize=7, title_fontsize=8)
+    ax.legend(title=f"Level (% vs {label_for(BASELINE_SCHED)})", fontsize=7, title_fontsize=8)
 
 
 def plot_grouped_bar_metric(
