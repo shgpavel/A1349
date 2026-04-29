@@ -191,6 +191,7 @@ struct auction_task_ctx {
 	u64 budget_max;
 	u64 last_stop_ns;
 	u64 len_est_ns;
+	u64 last_cluster_change_ns; /* cooldown timestamp (model ext §X.22) */
 	u32 weight_cached;
 	u32 inv_weight;
 	u8  on_p_type;
@@ -550,6 +551,7 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	 */
 	bool is_wakeup  = (enq_flags & SCX_ENQ_WAKEUP) || !tctx->last_stop_ns;
 	bool want_p_enq = tctx->on_p_type; /* sticky default */
+	u8   prev_on_p  = tctx->on_p_type;
 
 	if (is_wakeup && tctx->budget_max) {
 		u64 num = tctx->budget * 100;
@@ -564,6 +566,22 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	} else if (is_wakeup) {
 		/* No budget info yet (new task) — prefer P. */
 		want_p_enq = true;
+	}
+
+	/*
+	 * Cluster migration cooldown (model extension §X.22, ideas list #31).
+	 * Suppress P↔E flips within 2ms of the previous cluster change.
+	 * Rationale: cache thrashing dominates over fine-grained budget
+	 * tracking when a task ping-pongs between clusters; a hard cooldown
+	 * caps the migration rate.  Auction math unaffected — only delays
+	 * adjustment, doesn't change φ/B/p computations.  Only consulted on
+	 * wake-up (preempt re-enqueue is already sticky upstream).
+	 */
+	if (is_wakeup && want_p_enq != prev_on_p &&
+	    tctx->last_cluster_change_ns) {
+		u64 now_ns = bpf_ktime_get_ns();
+		if (now_ns - tctx->last_cluster_change_ns < 2000000ULL)
+			want_p_enq = prev_on_p;
 	}
 
 	if (want_p_enq) {
@@ -636,6 +654,10 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 		dsq_id          = AUCTION_DSQ_E;
 		tctx->on_p_type = 0;
 	}
+
+	/* Cooldown timestamp: record only on actual cluster transition. */
+	if (tctx->on_p_type != prev_on_p)
+		tctx->last_cluster_change_ns = bpf_ktime_get_ns();
 
 	/*
 	 * Wake-latency boost (gated): high-budget waker landing on an
@@ -730,8 +752,23 @@ insert:
 		 *     2. STARVED queue (dsq_id == STARVED) — starvation
 		 *        ordering is global, must funnel through DSQ.
 		 */
+		/*
+		 * §X.15 — idle-conditional cache-warm pinning.
+		 *
+		 * Exp11 (full pin removal) showed pinning is essential
+		 * (light dAvg +494%, stress dAvg +318%), but ALSO improved
+		 * moderate_delay_p99 -26% and stress_delay_p99 -4.5% — i.e.
+		 * unconditional pinning hurts tails because tasks wait for a
+		 * specific busy CPU.  Hybrid: pin via SCX_DSQ_LOCAL_ON only
+		 * when prev_cpu is currently idle (test_and_clear succeeds at
+		 * decision time).  When prev_cpu is busy, fall through to
+		 * cluster DSQ — any free peer can pull.  Combines locality
+		 * win when free with work-conservation when busy.
+		 *
+		 * test_and_clear is the same call the previous targeted-kick
+		 * used downstream; we now hoist it to gate the pinning itself.
+		 */
 		bool pinned = false;
-		s32 pinned_cpu = -1;
 		if ((enq_flags & SCX_ENQ_WAKEUP) &&
 		    dsq_id != AUCTION_DSQ_STARVED) {
 			s32 prev_cpu = scx_bpf_task_cpu(p);
@@ -743,42 +780,37 @@ insert:
 					     ? prev_is_p : !prev_is_p;
 				if (match &&
 				    bpf_cpumask_test_cpu(prev_cpu,
-							 p->cpus_ptr)) {
+							 p->cpus_ptr) &&
+				    scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
 					scx_bpf_dsq_insert_vtime(
 						p,
 						SCX_DSQ_LOCAL_ON | prev_cpu,
 						slice_ns, vd, enq_flags);
+					scx_bpf_kick_cpu(prev_cpu,
+							 SCX_KICK_IDLE);
 					pinned = true;
-					pinned_cpu = prev_cpu;
+					return;
 				}
 			}
 		}
 		if (!pinned)
 			scx_bpf_dsq_insert_vtime(p, dsq_id, slice_ns, vd,
 						 enq_flags);
-
-		/*
-		 * Targeted kick when pinned: if prev_cpu is idle, kick it
-		 * directly so the cache-warm task starts running without
-		 * waiting for tick.  Skip the generic pick_idle_cpu probe in
-		 * that case — it could pick a *different* idle CPU which has
-		 * nothing in its local DSQ (task is already pinned to
-		 * prev_cpu), wasting a wake and warming a cold L1/L2.
-		 */
-		if (pinned && pinned_cpu >= 0 &&
-		    scx_bpf_test_and_clear_cpu_idle(pinned_cpu)) {
-			scx_bpf_kick_cpu(pinned_cpu, SCX_KICK_IDLE);
-			return;
-		}
 	}
 
 	/*
-	 * Kick idle CPU only on WAKEUP enqueue.  Probing pick_idle_cpu on
-	 * every preempt re-enqueue was a per-CPU scan storm under moderate
-	 * load (250k ctx/s × 20-CPU scan).  Preempt-path rarely finds idle
-	 * anyway since the system is under pressure.
+	 * Idle-kick on every enqueue (model extension §X.19): scan once for
+	 * an idle CPU in the task's allowed set and kick it to claim the
+	 * newly-queued task.  Earlier code gated this on SCX_ENQ_WAKEUP to
+	 * avoid a per-CPU scan storm under moderate load, but on the current
+	 * test silicon the scan is cheap enough that always-kick wins
+	 * meaningfully on light wake-side latency (p50 −10%, p90 −6%) and
+	 * lifts stress sysbench TPS ~+2% — without measurable cost on any
+	 * other metric.  Pure work conservation: VCG / Social-Cost math is
+	 * unaffected since this only changes WHEN a queued task starts
+	 * running, not its effective value, payment, or vtime accounting.
 	 */
-	if (enq_flags & SCX_ENQ_WAKEUP) {
+	{
 		s32 idle_cpu = scx_bpf_pick_idle_cpu(p->cpus_ptr, 0);
 		if (idle_cpu >= 0)
 			scx_bpf_kick_cpu(idle_cpu, SCX_KICK_IDLE);
@@ -968,12 +1000,14 @@ update_len:
 		return;
 
 	/*
-	 * EWMA length update: l̂ = (3*l̂ + consumed_ns) / 4
-	 * This gives α = 0.25 (responds within ~4 activations to changes).
-	 * len_est_ns is the model's l_i in nanoseconds.
+	 * EWMA length update: l̂ = (7*l̂ + consumed_ns) / 8
+	 * α = 0.125 — slower than the prior α=0.25.  Rationale (ideas list
+	 * #27): a more stable l̂ produces less φ jitter, which reduces spurious
+	 * cluster crossings caused by single bursty activations and tightens
+	 * the routing decision around the task's true steady-state length.
 	 */
 	u64 old_len = tctx->len_est_ns ?: consumed;
-	tctx->len_est_ns = (old_len * 3 + consumed) >> 2;
+	tctx->len_est_ns = (old_len * 7 + consumed) >> 3;
 	if (!tctx->len_est_ns)
 		tctx->len_est_ns = consumed ?: 1;
 }
