@@ -31,21 +31,20 @@ sigint_handler(int dummy)
 	exit_req = 1;
 }
 
-/* Must mirror the BPF struct (same layout). */
+/*
+ * Must mirror the BPF auction_ctx struct (config-only, no runtime state).
+ * Runtime state (vtime_now, total_weight, dsq_phi_hi_κ) lives in a separate
+ * BPF map (runtime_data) and is owned exclusively by BPF — userspace must
+ * never read-modify-write it, otherwise periodic refreshes race-stomp the
+ * φ_hi EWMA and vtime floor.
+ */
 struct auction_ctx {
-	__u64 vtime_now;
-	__u64 total_weight;
 	__u32 max_capacity;
 	__u32 min_capacity;
 	__u32 cost_p;
 	__u32 cost_e;
 	__u32 p_core_count;
 	__u32 e_core_count;
-	/* VCG-pivot φ_hi_κ estimators (see BPF §I4). */
-	__u64 dsq_phi_hi_p;
-	__u64 dsq_phi_hi_e;
-	/* Precomputed fixed-point σ·cost_e in Q20 (see BPF). */
-	__u64 cost_e_sigma_q20;
 };
 
 #define P_CAP_PCT 90
@@ -124,10 +123,7 @@ refresh_cpu_capacities(struct scx_auction *skel,
 	if (!min_cap)
 		min_cap = max_cap;
 
-	/* Precompute fixed-point σ·cost_e in Q20 for BPF hot path. */
-	__u64 cost_e_sigma_q20 = ((__u64)cost_e * max_cap << 20) / min_cap;
-
-	/* Update global_data. */
+	/* Update global_data (config-only — runtime state lives elsewhere). */
 	__u32 gkey = 0;
 	struct auction_ctx ctx = {};
 	if (bpf_map_lookup_elem(gmap_fd, &gkey, &ctx) != 0)
@@ -135,15 +131,13 @@ refresh_cpu_capacities(struct scx_auction *skel,
 
 	if (ctx.max_capacity != max_cap || ctx.min_capacity != min_cap ||
 	    ctx.cost_p != cost_p || ctx.cost_e != cost_e ||
-	    ctx.p_core_count != p_cc || ctx.e_core_count != e_cc ||
-	    ctx.cost_e_sigma_q20 != cost_e_sigma_q20) {
-		ctx.max_capacity     = max_cap;
-		ctx.min_capacity     = min_cap;
-		ctx.cost_p           = cost_p;
-		ctx.cost_e           = cost_e;
-		ctx.p_core_count     = p_cc;
-		ctx.e_core_count     = e_cc;
-		ctx.cost_e_sigma_q20 = cost_e_sigma_q20;
+	    ctx.p_core_count != p_cc || ctx.e_core_count != e_cc) {
+		ctx.max_capacity = max_cap;
+		ctx.min_capacity = min_cap;
+		ctx.cost_p       = cost_p;
+		ctx.cost_e       = cost_e;
+		ctx.p_core_count = p_cc;
+		ctx.e_core_count = e_cc;
 		bpf_map_update_elem(gmap_fd, &gkey, &ctx, BPF_ANY);
 		changed = true;
 	}
@@ -160,6 +154,46 @@ refresh_cpu_capacities(struct scx_auction *skel,
 	return changed;
 }
 
+/*
+ * Pre-scan sysfs to discover max/min cpu_capacity *before* loading the BPF
+ * skeleton.  Used to auto-derive cost_e = cost_p * min_cap / max_cap so the
+ * cost ratio matches σ on whatever silicon the scheduler runs on (Intel 265K,
+ * Pixel 6, etc.) instead of being hardcoded to one machine.
+ */
+static void
+scan_caps(__u32 *max_out, __u32 *min_out)
+{
+	int ncpu = libbpf_num_possible_cpus();
+	__u32 max_cap = 0, min_cap = 0;
+
+	if (ncpu > 512)
+		ncpu = 512;
+
+	for (int cpu = 0; cpu < ncpu; cpu++) {
+		char path[128];
+		snprintf(path, sizeof(path),
+			 "/sys/devices/system/cpu/cpu%d/cpu_capacity", cpu);
+		__u32 cap = 1024;
+		FILE *f = fopen(path, "r");
+		if (f) {
+			if (fscanf(f, "%u", &cap) != 1)
+				cap = 1024;
+			fclose(f);
+		}
+		if (cap > max_cap)
+			max_cap = cap;
+		if (!min_cap || cap < min_cap)
+			min_cap = cap;
+	}
+
+	if (!max_cap)
+		max_cap = 1024;
+	if (!min_cap)
+		min_cap = max_cap;
+	*max_out = max_cap;
+	*min_out = min_cap;
+}
+
 static void
 usage(const char *prog)
 {
@@ -167,7 +201,8 @@ usage(const char *prog)
 		"Usage: %s [-p COST_P] [-e COST_E] [-h]\n"
 		"\n"
 		"  -p COST_P   per-quantum cost on P-core (default 1024)\n"
-		"  -e COST_E   per-quantum cost on E-core (default 560)\n"
+		"  -e COST_E   per-quantum cost on E-core (auto-derived from σ\n"
+		"              if omitted: cost_e = cost_p * min_cap / max_cap)\n"
 		"\n"
 		"VCG auction scheduler for heterogeneous CPUs (s4/A1349).\n"
 		"Reads per-CPU capacity from /sys/.../cpu_capacity and assigns\n"
@@ -186,13 +221,14 @@ main(int argc, char **argv)
 	struct bpf_link    *link;
 	int                 opt;
 	/*
-	 * Intel 265K: σ = max_cap/min_cap = 1024/791 = 1.295.
-	 * cost ratio MUST equal σ (user constraint — drain-rate symmetry
-	 * across clusters).  Scale absolute level to match v1's drain rate
-	 * on P: cost_p = 1024 (= max_cap), cost_e = 1024/σ ≈ 790.
+	 * Cost ratio MUST equal σ = max_cap/min_cap (user constraint —
+	 * drain-rate symmetry across clusters).  Userspace auto-derives
+	 * cost_e from detected topology so the ratio is correct on whatever
+	 * silicon runs the scheduler, not just Intel 265K.
 	 */
 	__u32               cost_p = 1024;
-	__u32               cost_e = 790;
+	__u32               cost_e = 0;          /* 0 = auto-derive from σ */
+	bool                cost_e_set = false;
 	unsigned int        refresh_tick = 0;
 
 	signal(SIGINT,  sigint_handler);
@@ -205,6 +241,7 @@ main(int argc, char **argv)
 			break;
 		case 'e':
 			cost_e = (__u32)atoi(optarg);
+			cost_e_set = true;
 			break;
 		default:
 			usage(argv[0]);
@@ -212,7 +249,25 @@ main(int argc, char **argv)
 		}
 	}
 
-	if (cost_p == 0 || cost_e == 0 || cost_e >= cost_p) {
+	if (cost_p == 0) {
+		fprintf(stderr, "Error: cost_p must be > 0.\n");
+		return 1;
+	}
+
+	/* Auto-derive cost_e = cost_p * min_cap / max_cap when not set. */
+	if (!cost_e_set) {
+		__u32 mx, mn;
+		scan_caps(&mx, &mn);
+		__u64 derived = (__u64)cost_p * mn / mx;
+		if (derived == 0)
+			derived = 1;
+		cost_e = (__u32)derived;
+		printf("auction: cost_e auto-derived: cost_p=%u cost_e=%u "
+		       "(σ=%.3f, max_cap=%u min_cap=%u)\n",
+		       cost_p, cost_e, (double)mx / (double)mn, mx, mn);
+	}
+
+	if (cost_e == 0 || cost_e >= cost_p) {
 		fprintf(stderr,
 			"Error: need cost_p > cost_e > 0 "
 			"(P-core must be strictly more expensive).\n");

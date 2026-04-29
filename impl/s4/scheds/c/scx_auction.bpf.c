@@ -788,10 +788,18 @@ insert:
 				    bpf_cpumask_test_cpu(prev_cpu,
 							 p->cpus_ptr) &&
 				    scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
-					scx_bpf_dsq_insert_vtime(
+					/*
+					 * Built-in DSQs (SCX_DSQ_LOCAL*) are
+					 * FIFO; vtime ordering is rejected by
+					 * the kernel ("cannot use vtime
+					 * ordering for built-in DSQs").  Use
+					 * the non-vtime insert here — the task
+					 * runs alone on this idle CPU anyway.
+					 */
+					scx_bpf_dsq_insert(
 						p,
 						SCX_DSQ_LOCAL_ON | prev_cpu,
-						slice_ns, vd, enq_flags);
+						slice_ns, enq_flags);
 					scx_bpf_kick_cpu(prev_cpu,
 							 SCX_KICK_IDLE);
 					pinned = true;
@@ -1064,34 +1072,35 @@ BPF_STRUCT_OPS(auction_set_weight, struct task_struct *p, u32 new_weight)
 void
 BPF_STRUCT_OPS(auction_enable, struct task_struct *p)
 {
-	struct auction_ctx     *gdata = get_ctx();
+	struct auction_runtime  *rt = get_rt();
 	struct auction_task_ctx *tctx;
 	u32 weight;
 	u64 new_sum;
 	s64 lag;
 
-	if (!gdata)
+	if (!rt)
 		return;
 
 	weight = p->scx.weight ?: 1;
 
 	if (!p->scx.dsq_vtime)
-		p->scx.dsq_vtime = gdata->vtime_now;
+		p->scx.dsq_vtime = rt->vtime_now;
 
-	lag     = (s64)gdata->vtime_now - (s64)p->scx.dsq_vtime;
-	new_sum = gdata->total_weight + weight;
+	lag     = (s64)rt->vtime_now - (s64)p->scx.dsq_vtime;
+	new_sum = rt->total_weight + weight;
 	if (new_sum)
-		add_vtime(gdata, -signed_div(lag, new_sum));
-	gdata->total_weight = new_sum;
+		add_vtime(rt, -signed_div(lag, new_sum));
+	rt->total_weight = new_sum;
 
 	/* Initialise task auction state. */
 	tctx = get_task_ctx(p, true);
 	if (tctx) {
 		u64 bmax    = (u64)weight * BUDGET_MUL;
-		tctx->budget_max  = bmax;
-		tctx->budget      = bmax; /* start with full budget */
-		tctx->len_est_ns  = (u64)AUCTION_SLICE_P; /* 1 quantum */
+		tctx->budget_max   = bmax;
+		tctx->budget       = bmax; /* start with full budget */
+		tctx->len_est_ns   = (u64)AUCTION_SLICE_P; /* 1 quantum */
 		tctx->last_stop_ns = 0;
+		tctx->wake_prev_cpu = -1;
 		refresh_inv_weight(tctx, weight);
 	}
 }
@@ -1099,22 +1108,22 @@ BPF_STRUCT_OPS(auction_enable, struct task_struct *p)
 void
 BPF_STRUCT_OPS(auction_disable, struct task_struct *p)
 {
-	struct auction_ctx *gdata = get_ctx();
+	struct auction_runtime *rt = get_rt();
 	u32 weight;
 	u64 new_sum;
 	s64 lag;
 
-	if (!gdata)
+	if (!rt)
 		return;
 
 	weight  = p->scx.weight ?: 1;
-	lag     = (s64)gdata->vtime_now - (s64)p->scx.dsq_vtime;
-	new_sum = (gdata->total_weight >= weight)
-		  ? gdata->total_weight - weight : 0;
-	gdata->total_weight = new_sum;
+	lag     = (s64)rt->vtime_now - (s64)p->scx.dsq_vtime;
+	new_sum = (rt->total_weight >= weight)
+		  ? rt->total_weight - weight : 0;
+	rt->total_weight = new_sum;
 
 	if (new_sum)
-		add_vtime(gdata, signed_div(lag, new_sum));
+		add_vtime(rt, signed_div(lag, new_sum));
 
 	bpf_task_storage_delete(&task_ctx_map, p);
 }
