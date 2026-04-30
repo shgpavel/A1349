@@ -68,7 +68,7 @@ char _license[] SEC("license") = "GPL";
  * Routing is re-evaluated only on wake-up; preempt re-enqueues always keep
  * the existing cluster to eliminate P↔E flip-flop during a running stretch.
  */
-#define BURST_HIGH_PCT      80     /* ≥ 80% budget → bursty → P-core         */
+#define BURST_HIGH_PCT      80     /* baseline (iter40 25 hurt CPU passmark) */
 #define BURST_LOW_PCT       30     /* < 30% budget → cpu-bound → E-core      */
 
 /*
@@ -204,12 +204,14 @@ struct auction_task_ctx {
 	u64 last_stop_ns;
 	u64 len_est_ns;
 	u64 last_cluster_change_ns; /* cooldown timestamp (model ext §X.22) */
+	u64 flip_window_ns;         /* idea #3: rolling 100ms window start */
 	u32 weight_cached;
 	u32 inv_weight;
 	s32 wake_prev_cpu; /* prev_cpu captured in select_cpu, -1 if unset */
 	u8  on_p_type;
 	u8  long_slice;   /* 1 if granted AUCTION_SLICE_E, 0 otherwise */
-	u8  _pad[2];
+	u8  flip_count;   /* idea #3: cluster-flips in current window */
+	u8  _pad[1];
 };
 
 struct {
@@ -555,7 +557,7 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 		s64 diff   = phi_p - phi_e;
 		u64 margin = abs_s64(diff);
 		s64 phi_max = (phi_p > phi_e) ? phi_p : phi_e;
-		u64 hyst   = phi_max > 0 ? (u64)phi_max / 16 : 0; /* 6.25% band */
+		u64 hyst   = phi_max > 0 ? (u64)phi_max / 8 : 0; /* iter35: 12.5% band */
 
 		if (margin >= hyst) {
 			want_p_enq = (diff >= 0);
@@ -578,7 +580,9 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	if (is_wakeup && want_p_enq != prev_on_p &&
 	    tctx->last_cluster_change_ns) {
 		u64 now_ns = bpf_ktime_get_ns();
-		if (now_ns - tctx->last_cluster_change_ns < 2000000ULL)
+		/* Baseline flat 2ms cooldown (#3 adaptive 10ms hurt memory-bound tasks). */
+		u64 cooldown_ns = 2000000ULL;
+		if (now_ns - tctx->last_cluster_change_ns < cooldown_ns)
 			want_p_enq = prev_on_p;
 	}
 
@@ -654,8 +658,17 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	}
 
 	/* Cooldown timestamp: record only on actual cluster transition. */
-	if (tctx->on_p_type != prev_on_p)
-		tctx->last_cluster_change_ns = bpf_ktime_get_ns();
+	if (tctx->on_p_type != prev_on_p) {
+		u64 now_flip = bpf_ktime_get_ns();
+		tctx->last_cluster_change_ns = now_flip;
+		/* idea #3: maintain 100ms rolling flip-count window. */
+		if (now_flip - tctx->flip_window_ns > 100000000ULL) {
+			tctx->flip_window_ns = now_flip;
+			tctx->flip_count = 1;
+		} else if (tctx->flip_count < 255) {
+			tctx->flip_count++;
+		}
+	}
 
 	/*
 	 * Wake-latency boost (gated): high-budget waker landing on an
@@ -800,8 +813,15 @@ insert:
 						p,
 						SCX_DSQ_LOCAL_ON | prev_cpu,
 						slice_ns, enq_flags);
-					scx_bpf_kick_cpu(prev_cpu,
-							 SCX_KICK_IDLE);
+					/*
+					 * Idea #12: skip self-kick.  When the
+					 * enqueue runs on prev_cpu itself, the
+					 * IPI is redundant — the next dispatch
+					 * picks the LOCAL_ON queue without help.
+					 */
+					if ((s32)bpf_get_smp_processor_id() != prev_cpu)
+						scx_bpf_kick_cpu(prev_cpu,
+								 SCX_KICK_IDLE);
 					pinned = true;
 					return;
 				}
@@ -857,6 +877,14 @@ BPF_STRUCT_OPS(auction_dispatch, s32 cpu, struct task_struct *prev)
 	 *      the dispatch path must never leave work stranded.
 	 *   3. starved tasks (budget exhausted).
 	 */
+	/*
+	 * Idea #20: STARVED → E-cluster only.  Budget-exhausted tasks
+	 * hand-bake themselves onto E so P-cluster latency is not
+	 * polluted by their long-tail residency.  P-cores still pull
+	 * STARVED only when local + other DSQ are both empty (last-resort
+	 * work conservation — avoids stranding when E is hot).
+	 */
+	bool is_e_local = (local_dsq == AUCTION_DSQ_E);
 #pragma unroll
 	for (u32 i = 0; i < DISPATCH_BATCH_MAX; i++) {
 		if (i >= slots)
@@ -865,9 +893,26 @@ BPF_STRUCT_OPS(auction_dispatch, s32 cpu, struct task_struct *prev)
 			continue;
 		if (scx_bpf_dsq_move_to_local(other_dsq))
 			continue;
-		if (scx_bpf_dsq_move_to_local(AUCTION_DSQ_STARVED))
+		if (is_e_local &&
+		    scx_bpf_dsq_move_to_local(AUCTION_DSQ_STARVED))
 			continue;
 		break;
+	}
+	/*
+	 * Iter34 (new): widen P-fallback when E saturated.  Pre-iter34 only
+	 * pulled STARVED on P when both DSQs were empty; under light load
+	 * with active STARVED tasks, this stranded them on E and dropped
+	 * schb_avg_rps.  Now: P also pulls STARVED when E is saturated
+	 * (E_q ≥ E_cc) to keep work moving.
+	 */
+	if (!is_e_local && slots) {
+		u64 p_q = scx_bpf_dsq_nr_queued(AUCTION_DSQ_P);
+		u64 e_q = scx_bpf_dsq_nr_queued(AUCTION_DSQ_E);
+		u32 e_cc = gdata ? gdata->e_core_count : 0;
+		bool p_idle      = (p_q == 0);
+		bool e_saturated = (e_cc && e_q >= e_cc);
+		if (p_idle && (e_q == 0 || e_saturated))
+			scx_bpf_dsq_move_to_local(AUCTION_DSQ_STARVED);
 	}
 }
 
