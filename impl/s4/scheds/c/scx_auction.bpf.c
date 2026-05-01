@@ -90,7 +90,7 @@ char _license[] SEC("license") = "GPL";
 /* virtual-time arithmetic (matches s3+) */
 #define SCALE               100
 #define INV_SHIFT           20
-#define DISPATCH_BATCH_MAX  8
+#define DISPATCH_BATCH_MAX  1
 
 /*
  * Dual slice length (dynamic, cluster-conditioned):
@@ -121,6 +121,16 @@ char _license[] SEC("license") = "GPL";
 #define AUCTION_DSQ_P       1
 #define AUCTION_DSQ_E       2
 #define AUCTION_DSQ_STARVED 3
+/*
+ * Per-CPU sticky DSQ (CFS-runqueue-equivalent).  ID = BASE + cpu.
+ * Holds tasks for the CPU they last ran on so dispatch on that CPU
+ * picks them back without per-quantum migration.  Cluster DSQs become
+ * routing-stage queues only — used by new/waking tasks until their
+ * first dispatch, then their second-quantum re-enqueue moves them to
+ * the per-CPU sticky DSQ.
+ */
+#define AUCTION_DSQ_PERCPU_BASE 100ULL
+#define AUCTION_NCPU_MAX        32
 
 /* ── BPF maps ────────────────────────────────────────────────────────────── */
 
@@ -827,9 +837,51 @@ insert:
 				}
 			}
 		}
-		if (!pinned)
+		if (!pinned) {
+			/*
+			 * Sticky per-CPU routing for non-WAKEUP enqueue.
+			 * Preempt re-enqueue (slice expiry) puts the task on
+			 * the CPU it just ran on; first dispatch on same CPU
+			 * picks it back — eliminates per-quantum rotation that
+			 * fragments per-CPU util and confuses intel_pstate.
+			 *
+			 * Includes STARVED — under saturated CPU-bound load
+			 * (passmark) all tasks live in STARVED and would lose
+			 * stickiness if STARVED forced cluster DSQ.
+			 *
+			 * WAKEUP path keeps cluster DSQ as routing stage
+			 * (cluster auction decided dsq_id; per-CPU pin at
+			 * dispatch time).  New tasks (no last_stop_ns) also
+			 * use cluster DSQ for initial spread.
+			 */
+			/*
+			 * Sticky path only for long-running CPU-bound tasks
+			 * (len_est ≥ SLICE_P).  Short-quantum tasks (memory
+			 * bench, schbench, hackbench) keep cluster DSQ — they
+			 * benefit from cross-CPU mobility / parallelism, and
+			 * unconditional pin costs them ~15-30% memory
+			 * throughput on passmark MEM bench.
+			 */
+			bool sticky = !(enq_flags & SCX_ENQ_WAKEUP) &&
+				      tctx->last_stop_ns &&
+				      tctx->len_est_ns >= AUCTION_SLICE_P;
+			if (sticky) {
+				s32 cur = (s32)bpf_get_smp_processor_id();
+				if (cur >= 0 && cur < AUCTION_NCPU_MAX &&
+				    bpf_cpumask_test_cpu(cur,
+							 p->cpus_ptr)) {
+					scx_bpf_dsq_insert_vtime(
+						p,
+						AUCTION_DSQ_PERCPU_BASE +
+						    (u64)cur,
+						slice_ns, vd, enq_flags);
+					goto enq_done;
+				}
+			}
 			scx_bpf_dsq_insert_vtime(p, dsq_id, slice_ns, vd,
 						 enq_flags);
+		}
+enq_done: ;
 	}
 
 	/*
@@ -885,16 +937,21 @@ BPF_STRUCT_OPS(auction_dispatch, s32 cpu, struct task_struct *prev)
 	 * work conservation — avoids stranding when E is hot).
 	 */
 	bool is_e_local = (local_dsq == AUCTION_DSQ_E);
+	u64 percpu_dsq  = AUCTION_DSQ_PERCPU_BASE + (u64)cpu;
 #pragma unroll
 	for (u32 i = 0; i < DISPATCH_BATCH_MAX; i++) {
 		if (i >= slots)
 			break;
+		/* 1. Sticky per-CPU DSQ — preempt-re-enqueued tasks. */
+		if (scx_bpf_dsq_move_to_local(percpu_dsq))
+			continue;
+		/* 2. Cluster DSQs — new/waking tasks awaiting first run. */
 		if (scx_bpf_dsq_move_to_local(local_dsq))
 			continue;
 		if (scx_bpf_dsq_move_to_local(other_dsq))
 			continue;
-		if (is_e_local &&
-		    scx_bpf_dsq_move_to_local(AUCTION_DSQ_STARVED))
+		/* 3. STARVED — both clusters pull (E-only gate dropped). */
+		if (scx_bpf_dsq_move_to_local(AUCTION_DSQ_STARVED))
 			continue;
 		break;
 	}
@@ -1178,6 +1235,7 @@ BPF_STRUCT_OPS_SLEEPABLE(auction_init)
 {
 	struct auction_ctx *gdata = get_ctx();
 	s32 ret;
+	u32 i;
 
 	if (gdata) {
 		if (!gdata->max_capacity)
@@ -1196,7 +1254,15 @@ BPF_STRUCT_OPS_SLEEPABLE(auction_init)
 	ret = scx_bpf_create_dsq(AUCTION_DSQ_E, -1);
 	if (ret)
 		return ret;
-	return scx_bpf_create_dsq(AUCTION_DSQ_STARVED, -1);
+	ret = scx_bpf_create_dsq(AUCTION_DSQ_STARVED, -1);
+	if (ret)
+		return ret;
+	bpf_for(i, 0, AUCTION_NCPU_MAX) {
+		s32 r2 = scx_bpf_create_dsq(AUCTION_DSQ_PERCPU_BASE + i, -1);
+		if (r2)
+			return r2;
+	}
+	return 0;
 }
 
 SCX_OPS_DEFINE(auction_ops,
