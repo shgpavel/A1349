@@ -88,8 +88,8 @@ active weight at time~$ t $ is
     W(t)=\sum_{j\in A(t)} w_j ,
 \end{equation}
 where $ A(t) $ denotes the set of clients competing for service.
-The ideal reference is a fluid system in which client $ i $ continuously
-receives instantaneous share $ w_i/W(t) $.
+The ideal reference is a continuous-flow system in which client
+$ i $ continuously receives instantaneous share $ w_i/W(t) $.
 EEVDF captures this entitlement through system virtual time
 \begin{equation}
     V(t)=\int_{t_0}^{t}\frac{1}{W(\tau)}\,d\tau ,
@@ -110,7 +110,7 @@ and a virtual deadline
 The request is considered runnable only once $ v_e \le V(t) $.
 Among all eligible requests, EEVDF dispatches the one with the
 smallest~$ v_d $. This rule couples fairness with latency.
-Clients that have received less than their fluid-model share become
+Clients that have received less than their continuous model share become
 eligible sooner, while larger weights compress the term $ r/w_i $,
 producing earlier deadlines for the same request size.
 The lag of client~$ i $, defined as the signed deviation between ideal
@@ -214,8 +214,9 @@ baseline, a 10$ \times $ increase attributable to the overhead
 of eBPF dispatch and contention on the single shared dispatch queue (DSQ).
 
 However, the main achievement of this research and proposed sched\_ext EEVDF
-is the flexibility of the resulting solution. Any constant or formula can be
-modified and tested without requiring a reboot, thanks to the sched\_ext framework.
+is the flexibility of the resulting solution. Any constant (e.g.\ scaling factor $ S $)
+or formula (e.g.\ deadline rule $ VD_i = VE_i + \Delta S / w_i $) can be modified and tested
+without requiring a reboot, thanks to the sched\_ext framework.
 
 
 %%%% References
