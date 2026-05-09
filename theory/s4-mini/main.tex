@@ -1,0 +1,636 @@
+\documentclass[12pt, oneside]{book}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{caption}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T2A,T1]{fontenc}
+\usepackage{ragged2e}
+
+\usepackage{setspace}
+\setstretch{1.2}
+\setlength{\parindent}{1.25cm}
+\setlength{\emergencystretch}{3em}
+\everymath{\displaystyle}
+\usepackage{tocloft}
+\cftsetindents{section}{1em}{2em}
+\renewcommand\cfttoctitlefont{\hfill\Large\bfseries}
+\renewcommand\cftaftertoctitle{\hfill\mbox{}}
+\setlength{\cftbeforesecskip}{0.1cm}
+\setlength{\cftbeforesubsecskip}{0.1cm}
+\setlength{\cftbeforetoctitleskip}{0cm}
+\setlength{\cftaftertoctitleskip}{0.4cm}
+\setcounter{tocdepth}{2}
+
+\usepackage[english,russian]{babel}
+\usepackage[a4paper, left=3cm, top=2cm, right=1cm, bottom=2cm]{geometry}
+
+\makeatletter
+\renewcommand{\@makeschapterhead}[1]{%
+        \vspace*{0\p@}
+        {\parindent \z@ \center
+                \normalfont
+                \LARGE \bfseries #1\par\nobreak
+                \addcontentsline{toc}{chapter}{#1}
+                \vskip 10\p@
+}}
+\makeatother
+
+\makeatletter
+\renewcommand{\chapter}{%
+        \thispagestyle{plain}
+        \global\@topnum\z@
+        \@afterindentfalse
+\secdef\@chapter\@schapter}
+
+\renewcommand{\@makechapterhead}[1]{%
+        \vspace*{0\p@}
+        {\parindent \z@ \raggedright
+                \normalfont
+                \LARGE \bfseries \thechapter\quad #1\par\nobreak
+                \vskip 20\p@
+}}
+\makeatother
+
+\makeatletter
+\newcommand{\custompagestyle}{%
+        \begingroup
+        \renewcommand{\ps@plain}{%
+                \renewcommand{\@oddfoot}{\hfil\thepage\hfil}
+                \renewcommand{\@evenfoot}{\hfil\thepage\hfil}
+                \renewcommand{\@oddhead}{}
+                \renewcommand{\@evenhead}{}
+        }%
+        \pagestyle{plain}
+}
+\makeatother
+
+\newenvironment{customquote}
+{\list{}{\leftmargin=0.5cm
+                \rightmargin=0.5cm
+                \topsep=0pt
+                \partopsep=0pt
+                \parsep=2pt
+                \itemsep=0pt
+        }%
+        \normalfont\relax
+\item\relax}
+{\endlist}
+
+\begin{document}
+\thispagestyle{empty}
+\begin{center}
+        \textbf{\large САНКТ-ПЕТЕРБУРГСКИЙ ГОСУДАРСТВЕННЫЙ УНИВЕРСИТЕТ} \\[2cm]
+
+        {\large ОТЧЕТ О НАУЧНО-ИССЛЕДОВАТЕЛЬСКОЙ РАБОТЕ} \\[2cm]
+
+        {\Large Шаго Павел Евгеньевич} \\[0.3cm]
+
+        {22.Б07-ПУ, 01.03.02 Прикладная математика и информатика} \\[1cm]
+
+        \textbf{\Large Планировщики 4} \\[3cm]
+
+        {\large Научный руководитель} \\[0.3cm]
+        \large{к.ф.-м.н., доцент Корхов В. В.} \\[10cm]
+        {Санкт-Петербург}\\ \today
+
+\end{center}
+
+\newpage
+\custompagestyle
+\setcounter{page}{2}
+\renewcommand{\contentsname}{Содержание}
+\tableofcontents
+
+\newpage
+\chapter*{Введение}
+\begin{customquote}
+        \quad Earliest Eligible Virtual Deadline First
+        (EEVDF)~\cite{stoica} --- алгоритм
+        пропорцио\-наль\-но-доле\-вого планирования,
+        принятый в качестве основного планировщика ядра
+        Linux начиная с версии 6.6~\cite{eevdf_intro}
+        взамен Completely Fair Scheduler
+        (CFS)~\cite{wong}. Фреймворк
+        sched\_ext~\cite{schedext} (с версии Linux 6.12)
+        позволяет загружать пользовательские планировщики
+        как eBPF-программы без пересборки ядра, что
+        открывает возможность прототипирования
+        алгоритмов~\cite{srand}, однако вносит
+        накладные расходы и ограничивает доступ к ряду
+        подсистем ядра.
+
+        \quad Целью данной работы является исследование
+        возможности реализации алгоритма EEVDF средствами
+        фреймворка sched\_ext. Для этого приводится
+        математическая модель алгоритма, строится явное
+        отображение каждого шага модели на конкретный
+        обработчик sched\_ext и проводится экспериментальная
+        оценка с использованием специализированных тестов производительности
+        (hackbench, sysbench, schbench) на трёх уровнях
+        нагрузки. Результаты позволяют оценить накладные
+        расходы фреймворка sched\_ext и компромиссы
+        производительности при переносе алгоритма
+        из ядра во фреймворк.
+\end{customquote}
+
+\newpage
+\chapter{Математическая модель EEVDF}
+
+\section{Пропорционально-долевое планирование}
+\begin{customquote}
+        \quad Earliest Eligible Virtual Deadline First
+        (EEVDF)~\cite{stoica} --- модель
+        пропорцио\-наль\-но-доле\-вого планирования, предложенная
+        Ion Stoica и Hussein Abdel-Wahab.
+
+        \quad Рассматривается один разделяемый ресурс
+        (процессор), время на котором выделяется квантами
+        длительности не более $q$. Множество клиентов (задач),
+        активных в момент $t$, обозначается $\mathcal{A}(t)$,
+        каждому клиенту $i$ назначен положительный вес $w_i$.
+        Идеальная мгновенная доля ресурса для клиента $i$:
+        \begin{equation}
+                f_i(t) = \frac{w_i}{\sum_{j \in \mathcal{A}(t)} w_j}.
+        \end{equation}
+        В идеализированной непрерывной модели при $q \to 0$
+        обслуживание, положенное клиенту $i$ на интервале
+        $[t_0, t_1]$, есть интеграл от $f_i$:
+        \begin{equation}
+                S_i(t_0, t_1) = \int_{t_0}^{t_1} f_i(\tau)\, d\tau.
+        \end{equation}
+        Разность между положенным и фактически полученным
+        обслуживанием задаёт отставание (lag):
+        \begin{equation}
+                \mathrm{lag}_i(t) = S_i(t_0^i, t) - s_i(t_0^i, t),
+        \end{equation}
+        где $t_0^i$ --- момент входа клиента $i$ в систему,
+        $s_i$ --- фактически полученное обслуживание.
+        Положительный lag соответствует недообслуженному
+        клиенту, отрицательный --- переобслуженному.
+
+        \quad Виртуальное время системы $V(t)$:
+        \begin{equation}
+                V(t) = \int_0^t \frac{d\tau}{\sum_{j \in
+                \mathcal{A}(\tau)} w_j}.
+        \end{equation}
+        За одну единицу виртуального времени каждый активный
+        клиент получает ровно $w_i$ единиц реального
+        обслуживания:
+        \begin{equation}
+                S_i(t_1, t_2) = w_i \cdot \bigl(V(t_2) - V(t_1)\bigr).
+        \end{equation}
+\end{customquote}
+
+\section{Виртуальные дедлайны и правило выбора}
+\begin{customquote}
+        \quad Каждый запрос $k$ клиента $i$ характеризуется
+        длиной $r^{(k)}$, виртуальным временем доступности
+        $ve^{(k)}$ и виртуальным дедлайном $vd^{(k)}$.
+        Время доступности:
+        \begin{equation}
+                ve^{(k)} = V(t_0^i) + \frac{s_i(t_0^i, t)}{w_i},
+        \end{equation}
+        виртуальный дедлайн:
+        \begin{equation}
+                vd^{(k)} = ve^{(k)} + \frac{r^{(k)}}{w_i}.
+        \end{equation}
+        Запрос считается доступным (eligible) в момент $t$,
+        если $ve \leq V(t)$. Среди доступных запросов
+        выбирается тот, чей $vd$ минимален.
+
+        \quad При полном использовании кванта
+        $ve^{(k+1)} = vd^{(k)}$; при частичном использовании
+        $u^{(k)} \leq r^{(k)}$ обновление принимает вид
+        $ve^{(k+1)} = ve^{(k)} + u^{(k)} / w_i$.
+
+        \textbf{Лемма 1} (доступность недообслуженного
+        клиента)~\cite{stoica}.
+        \textit{Если $\mathrm{lag}_i(t) \geq 0$ для активного
+        клиента $i$, то $i$ имеет доступный запрос в $t$.}
+
+        \textbf{Лемма 2}~\cite{stoica}.
+        \textit{В любой момент $t$ сумма отставаний равна нулю:}
+        \begin{equation}
+                \sum_{i \in \mathcal{A}(t)} \mathrm{lag}_i(t) = 0.
+        \end{equation}
+        Из лемм 1 и 2 следует, что EEVDF является
+        сохраняющим работу (work-conserving): ресурс не
+        простаивает при наличии активных клиентов.
+\end{customquote}
+
+\section{Границы отставания}
+\begin{customquote}
+        \textbf{Теорема 1} (границы
+        отставания)~\cite{stoica}.
+        \textit{В стационарной системе (множество активных
+        клиентов не меняется) для любого активного
+        клиента $i$:}
+        \begin{equation}
+                -r_{\max} < \mathrm{lag}_i(t) < \max(r_{\max}, q),
+        \end{equation}
+        \textit{где $r_{\max}$ --- максимальная длина запроса
+        клиента $i$. Обе границы асимптотически точны.}
+
+        \textbf{Следствие.}
+        \textit{Если $r^{(k)} \leq q$ для всех запросов, то
+        $-q < \mathrm{lag}_i(t) < q$.}
+
+        \textbf{Лемма} (оптимальность)~\cite{stoica}.
+        \textit{Ни один пропорцио\-наль\-но-доле\-вой алгоритм
+        с квантами размера $q$ не может дать границу лучше
+        $(-q, q)$, и EEVDF достигает этой границы.}
+
+        \quad Фильтр доступности ($ve \leq V(t)$) отличает
+        EEVDF от алгоритмов справедливой очередизации
+        (Fair Queueing)~\cite{leung}, ограничивая отставание
+        до $O(1)$ вместо $O(n)$~\cite{stoica}.
+\end{customquote}
+
+\chapter{Отображение модели на sched\_ext}
+
+\begin{customquote}
+        \quad Описание фреймворка sched\_ext~\cite{schedext}
+        и его обратных вызовов (ops) приведено в
+        предыдущих работах~\cite{nir2,nir3}. Ниже
+        описываются переменные состояния и отображение
+        обработчиков, специфичные для реализации EEVDF.
+\end{customquote}
+
+\section{Переменные состояния}
+\begin{customquote}
+        \quad Глобальное состояние хранится в eBPF-карте с
+        единственным элементом: \texttt{vtime\_now} ---
+        системное виртуальное время $V(t)$, масштабированное
+        коэффициентом $S = 1000$ для целочисленной точности,
+        и \texttt{total\_weight} --- суммарный вес $\sum w_j$.
+
+        \quad Состояние задачи хранится в карте
+        \texttt{BPF\_MAP\_TYPE\_TASK\_STORAGE} с обращением
+        за $O(1)$: виртуальное время доступности \texttt{ve}
+        ($ve^{(k)}$, уравнение~6), виртуальный дедлайн
+        \texttt{vd} ($vd^{(k)}$, уравнение~7).
+        Единственная очередь \texttt{SHARED\_DSQ} упорядочена
+        по $vd$: вставка через
+        \texttt{scx\_bpf\_dsq\_insert\_vtime} реализует
+        правило выбора EEVDF --- среди доступных запросов
+        извлекается тот, чей $vd$ минимален.
+\end{customquote}
+
+\section{Отображение обработчиков}
+\begin{customquote}
+        \quad В таблице~\ref{tab:eevdf_ops} приведено
+        соответствие между обработчиками sched\_ext и
+        шагами модели EEVDF.
+
+        \begin{table}[!ht]
+                \centering
+                \caption{Отображение обработчиков
+                        sched\_ext на модель EEVDF}
+                \label{tab:eevdf_ops}
+                \vspace{0.3em}
+                \begin{tabular}{|l|p{9.5cm}|}
+                        \hline
+                        \textbf{Обработчик} &
+                                \textbf{Реализуемый шаг} \\
+                        \hline
+                        \texttt{select\_cpu} &
+                                Быстрый путь: если
+                                $ve \leq V(t)$ и есть свободное
+                                ядро, задача помещается в
+                                \texttt{LOCAL\_DSQ} \\
+                        \texttt{enqueue} &
+                                Ограничитель отставания
+                                (теорема~1), вычисление
+                                $vd = ve + q \cdot S / w_i$,
+                                вставка в
+                                \texttt{SHARED\_DSQ} по $vd$ \\
+                        \texttt{dispatch} &
+                                Извлечение головы DSQ ---
+                                задачи с наименьшим $vd$ \\
+                        \texttt{stopping} &
+                                $ve \mathrel{+}= u / w_i$,
+                                $V(t) \mathrel{+}=
+                                u \cdot S / \sum w_j$ \\
+                        \texttt{enable} &
+                                Вход: $ve := V(t)$,
+                                $\sum w_j \mathrel{+}= w_i$ \\
+                        \texttt{disable} &
+                                Выход: $V(t^+) = V(t) +
+                                \mathrm{lag}/\sum w_{j \neq i}$ \\
+                        \texttt{set\_weight} &
+                                Изменение веса:
+                                выход--вход с новым весом \\
+                        \hline
+                \end{tabular}
+        \end{table}
+
+        \quad \textbf{Атомарное продвижение $V(t)$.}
+        На многоядерной системе несколько ядер могут
+        одновременно вызвать \texttt{stopping}. Продвижение
+        $V$ выполняется через атомарную операцию
+        \texttt{\_\_sync\_fetch\_and\_add}:
+        \begin{equation}
+                \Delta V = \frac{u \cdot S}{\sum_{j} w_j},
+        \end{equation}
+        где $u$ --- фактически использованная часть кванта.
+
+        \quad \textbf{Двусторонний ограничитель отставания.}
+        При постановке задачи в очередь значение $ve$
+        корректируется до $ve'$:
+        \[
+                \max(V(t) - q_v,\; ve) \leq ve'
+                \leq V(t) + q_v,
+        \]
+        где $q_v = q \cdot S / w_i$. Нижняя граница
+        предотвращает монополизацию ресурса задачей с
+        накопленным отставанием; верхняя не позволяет задаче
+        уйти слишком далеко в будущее. Оба ограничения
+        следуют из границ теоремы~1.
+
+        \quad Единственное отклонение от теоретической модели ---
+        замена непрерывного продвижения $V(t)$ дискретными
+        приращениями на границах квантов. Это не нарушает
+        границ теоремы~1, поскольку $q$ конечно.
+\end{customquote}
+
+\chapter{Экспериментальная оценка}
+
+\section{Тестовое оборудование и методика}
+\begin{customquote}
+        \quad Экспериментальная оценка проведена на платформе
+        с процессором Intel Core Ultra~7 265K
+        (Arrow Lake-S)~\cite{intelhybrid}: 8 P-ядер
+        Lion Cove (до 5,5~ГГц) и 12 E-ядер Skymont
+        (до 4,6~ГГц), 20 ядер без Hyper-Threading,
+        32 ГБ DDR5. Операционная
+        система --- Linux 7.0 с поддержкой sched\_ext.
+
+        \quad Сравниваются штатный EEVDF ядра Linux
+        (эталон) и его sched\_ext реализация.
+        Набор тестов:
+        \begin{itemize}
+                \item \textbf{hackbench} --- массовое порождение
+                        задач с интенсивным IPC через каналы.
+                        Метрика: время выполнения (секунды).
+                \item \textbf{sysbench} --- OLTP-нагрузка
+                        (чтение PostgreSQL, 4 таблицы по
+                        100\,000 строк, 10\,с).
+                        Метрика: TPS.
+                \item \textbf{schbench} --- чувствительная к задержкам
+                        веб-нагрузка. Метрики: задержка
+                        пробуждения (p99, p99.9), RPS.
+        \end{itemize}
+
+        \quad Параметры нагрузки приведены в
+        таблице~\ref{tab:params}.
+
+        \begin{table}[!ht]
+                \centering
+                \caption{Параметры тестов по уровням нагрузки}
+                \label{tab:params}
+                \vspace{0.3em}
+                \begin{tabular}{|l|c|c|c|}
+                        \hline
+                        Тест & Лёгкая & Умеренная & Стрессовая \\
+                        \hline
+                        hackbench & \texttt{-l 10000}
+                                  & \texttt{-g 4 -l 120000}
+                                  & \texttt{-g 10 -l 50000} \\
+                        sysbench (потоки) & 1 & 4 & 20 \\
+                        schbench (\texttt{-m}/\texttt{-t})
+                                  & 1\,/\,5 & 2\,/\,20
+                                  & 4\,/\,40 \\
+                        \hline
+                \end{tabular}
+        \end{table}
+
+        \quad Каждый тест запускается при трёх уровнях
+        нагрузки по три прогона со случайным порядком
+        планировщиков. Приводятся средние значения и
+        95\%-доверительные интервалы по критерию Стьюдента.
+\end{customquote}
+
+\section{Результаты}
+\begin{customquote}
+        \quad \textbf{hackbench}
+        (таблица~\ref{tab:hackbench}).
+
+        \begin{table}[!ht]
+                \centering
+                \caption{hackbench: время выполнения (секунды)}
+                \label{tab:hackbench}
+                \vspace{0.3em}
+                \begin{tabular}{|l|c|c|c|c|c|c|}
+                        \hline
+                        Планиров- & \multicolumn{2}{c|}{Лёгкая}
+                                  & \multicolumn{2}{c|}{Умеренная}
+                                  & \multicolumn{2}{c|}{Стрессовая} \\
+                        \cline{2-7}
+                        щик & Ср. & 95\%-ДИ & Ср. & 95\%-ДИ & Ср. & 95\%-ДИ \\
+                        \hline
+                        sched\_ext EEVDF & \textbf{1,838} & {\scriptsize [1,752;\:1,923]}
+                                   & \textbf{8,716} & {\scriptsize [8,640;\:8,793]}
+                                   & \textbf{9,176} & {\scriptsize [8,998;\:9,354]} \\
+                        Linux EEVDF & 1,900 & {\scriptsize [1,870;\:1,931]}
+                                   & 9,655 & {\scriptsize [9,628;\:9,683]}
+                                   & 9,344 & {\scriptsize [9,189;\:9,498]} \\
+                        \hline
+                \end{tabular}
+        \end{table}
+
+        \quad Средние значения sched\_ext ниже штатного
+        на 1,8--9,7\%, но доверительные интервалы
+        пересекаются при лёгкой и стрессовой нагрузке ---
+        статистически значимое различие только при
+        умеренной (9,7\%). Реализация через sched\_ext
+        не вносит измеримого ухудшения для данного типа
+        нагрузки.
+
+        \quad \textbf{sysbench}
+        (таблица~\ref{tab:sysbench}).
+
+        \begin{table}[!ht]
+                \centering
+                \caption{sysbench: транзакции в секунду (TPS)}
+                \label{tab:sysbench}
+                \vspace{0.3em}
+                \begin{tabular}{|l|c|c|c|c|c|c|}
+                        \hline
+                        Планиров- & \multicolumn{2}{c|}{Лёгкая}
+                                  & \multicolumn{2}{c|}{Умеренная}
+                                  & \multicolumn{2}{c|}{Стрессовая} \\
+                        \cline{2-7}
+                        щик & Ср. & 95\%-ДИ & Ср. & 95\%-ДИ & Ср. & 95\%-ДИ \\
+                        \hline
+                        Linux EEVDF & \textbf{4246} & {\scriptsize [4201;\:4292]}
+                                   & \textbf{16\,566} & {\scriptsize [16\,487;\:16\,645]}
+                                   & \textbf{67\,373} & {\scriptsize [65\,042;\:69\,705]} \\
+                        sched\_ext EEVDF & 3793 & {\scriptsize [3295;\:4292]}
+                                   & 12\,517 & {\scriptsize [12\,279;\:12\,756]}
+                                   & 41\,803 & {\scriptsize [39\,324;\:44\,282]} \\
+                        \hline
+                \end{tabular}
+        \end{table}
+
+        \quad На sysbench штатный EEVDF опережает
+        sched\_ext на 10,7--38,0\% по TPS (при лёгкой
+        нагрузке ДИ пересекаются). Снижение обусловлено
+        накладными расходами eBPF-вызовов при высоком
+        темпе переключений контекста и отсутствием
+        интеграции с подсистемой wake\_affine.
+
+        \quad \textbf{schbench}
+        (таблица~\ref{tab:schbench}).
+
+        \begin{table}[!ht]
+                \centering\small
+                \caption{schbench: задержка
+                        пробуждения (мкс) и RPS}
+                \label{tab:schbench}
+                \vspace{0.3em}
+                \begin{tabular}{|l|c|c|c|c|c|c|}
+                        \hline
+                        Планиров- & \multicolumn{2}{c|}{p99}
+                                  & \multicolumn{2}{c|}{p99.9}
+                                  & \multicolumn{2}{c|}{Ср. RPS} \\
+                        \cline{2-7}
+                        щик & Ср. & 95\%-ДИ & Ср. & 95\%-ДИ
+                            & Ср. & 95\%-ДИ \\
+                        \hline
+                        \multicolumn{7}{|c|}{Лёгкая нагрузка} \\
+                        \hline
+                        sched\_ext EEVDF & \textbf{5} & ---
+                                  & \textbf{59} & {\scriptsize [54;\:64]}
+                                  & \textbf{1668} & {\scriptsize [1522;\:1814]} \\
+                        Linux EEVDF & 152 & {\scriptsize [141;\:163]}
+                                & 185 & {\scriptsize [182;\:189]}
+                                & 591 & {\scriptsize [589;\:593]} \\
+                        \hline
+                        \multicolumn{7}{|c|}{Умеренная нагрузка} \\
+                        \hline
+                        sched\_ext EEVDF & \textbf{2375} & {\scriptsize [2277;\:2473]}
+                                  & \textbf{2815} & {\scriptsize [2713;\:2917]}
+                                  & \textbf{8585} & {\scriptsize [8582;\:8588]} \\
+                        Linux EEVDF & 3300 & {\scriptsize [3266;\:3334]}
+                                & 4733 & {\scriptsize [4281;\:5185]}
+                                & 5700 & {\scriptsize [5673;\:5726]} \\
+                        \hline
+                        \multicolumn{7}{|c|}{Стрессовая нагрузка} \\
+                        \hline
+                        sched\_ext EEVDF & 16\,112 & {\scriptsize [16\,033;\:16\,191]}
+                                  & \textbf{16\,672} & ---
+                                  & \textbf{8639} & {\scriptsize [8628;\:8650]} \\
+                        Linux EEVDF & \textbf{11\,131} & {\scriptsize [10\,534;\:11\,727]}
+                                & 17\,163 & {\scriptsize [15\,266;\:19\,059]}
+                                & 5645 & {\scriptsize [5434;\:5856]} \\
+                        \hline
+                \end{tabular}
+        \end{table}
+
+        \quad При лёгкой и умеренной нагрузке sched\_ext
+        EEVDF превосходит штатный по всем метрикам
+        благодаря агрессивному быстрому пути
+        \texttt{select\_cpu}: при наличии свободного ядра
+        задача помещается в \texttt{LOCAL\_DSQ}, минуя
+        общую очередь. При стрессовой нагрузке sched\_ext
+        проигрывает по p99, но выигрывает
+        по RPS ($8639$ vs $5645$,
+        разница 53\%) за счёт более равномерной загрузки
+        ядер через глобальную очередь DSQ.
+
+\end{customquote}
+
+
+\newpage
+\chapter*{Заключение}
+\begin{customquote}
+        \quad В работе приведена математическая модель
+        EEVDF, построено её отображение на обработчики
+        sched\_ext (таблица~\ref{tab:eevdf_ops}) и
+        проведено экспериментальное сравнение со штатным
+        EEVDF ядра Linux:
+        \begin{itemize}
+                \item \textbf{hackbench} (массовый IPC):
+                        sched\_ext статистически значимо
+                        быстрее при умеренной нагрузке
+                        (на 9,7\%), при лёгкой и стрессовой
+                        различия не значимы --- накладные
+                        расходы фреймворка пренебрежимо малы
+                        при данном типе нагрузки;
+                \item \textbf{schbench} (веб-нагрузка):
+                        sched\_ext превосходит
+                        штатный EEVDF по RPS на всех уровнях
+                        нагрузки (в 2,8 раза при лёгкой,
+                        на 50,6\% при умеренной, на 53\%
+                        при стрессовой);
+                \item \textbf{sysbench} (OLTP): sched\_ext
+                        уступает на 10--38\% по TPS из-за
+                        стоимости eBPF-вызовов при высоком
+                        темпе переключений и отсутствия
+                        интеграции с wake\_affine.
+        \end{itemize}
+
+        \quad Результаты показывают, что sched\_ext
+        пригоден для прототипирования алгоритмов
+        планирования: реализация корректно воспроизводит
+        поведение EEVDF на hackbench и schbench, но
+        на нагрузках с интенсивным переключением контекста
+        (sysbench) накладные расходы фреймворка могут быть
+        существенными. Это ограничение носит архитектурный
+        характер и не зависит от конкретного алгоритма,
+        что следует учитывать при выборе sched\_ext
+        в качестве платформы для исследований.
+\end{customquote}
+
+\newpage
+\renewcommand{\bibname}{\large СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ}
+\begin{thebibliography}{99}
+        \vspace*{0.3cm}
+        \bibitem{stoica}
+        Ion Stoica, Hussein Abdel-Wahab Earliest Eligible Virtual Deadline First
+        : A Flexible and Accurate Mechanism for Proportional Share
+        Resource Allocation
+        Old Dominion University 1996
+        \bibitem{schedext}
+        Jonathan Corbet The BPF extensible scheduler class
+        [Электронный ресурс].
+        -- Режим доступа: \url{https://lwn.net/Articles/916291/} --
+        Дата обращения 17.02.2026
+        \bibitem{eevdf_intro}
+        An EEVDF CPU scheduler for Linux [Электронный ресурс].
+        -- Режим доступа: \url{https://lwn.net/Articles/925371} --
+        Дата обращения 04.03.2026
+        \bibitem{wong}
+        Chee Siang Wong, Ian K. T. Tan, Rosalina D. Kumari,
+        Joy W. Lam, Wee Fun
+        Fairness and Interactive Performance of O(1) and CFS
+        Linux Kernel Schedulers
+        International Symposium on Information Technology 2008
+        \bibitem{intelhybrid}
+        Efraim Rotem et al. Alder Lake Architecture
+        2021 IEEE Hot Chips 33 Symposium (HCS) Palo Alto CA
+        USA 2021 pp. 1--23
+        \bibitem{srand}
+        Qianhui Tang, Xiao Gao, Guodong Li, Jian Lin
+        Optimizing Linux Scheduling Based on Global Runqueue
+        with SCX
+        IEEE International Conference SMC 2024
+        \bibitem{leung}
+        Joseph Y-T. Leung\ Handbook of Scheduling: Algorithms, Models, and
+        Performance Analysis CRC Press 2004
+        \bibitem{nir2}
+        Павел Е. Шаго Отчет о научно-исследовательской работе:
+        Планировщики 2 б. и.
+        2025
+        \bibitem{nir3}
+        Павел Е. Шаго Отчет о научно-исследовательской работе:
+        Планировщики 3 б. и.
+        2025
+\end{thebibliography}
+
+\end{document}
