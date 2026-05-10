@@ -51,6 +51,7 @@ CSV_COLUMNS = [
     "wait_ns_per_sec",
     # RAPL power
     "power_watts",
+    "energy_joules",
     # BPF latency (sched_delay)
     "sched_delay_count",
     "sched_delay_avg_ns",
@@ -267,8 +268,10 @@ class RaplSource:
                 d_uj = total_uj - self.prev
                 if d_uj < 0:
                     d_uj += self.max_energy_range
-                watts = d_uj / (dt * 1e6)
+                joules = d_uj / 1e6
+                watts = joules / dt
                 result["power_watts"] = round(watts, 2)
+                result["energy_joules"] = round(joules, 4)
 
         self.prev = total_uj
         self.prev_time = now

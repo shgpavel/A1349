@@ -65,6 +65,7 @@ TS_METRICS = [
 ]
 
 ONESHOT_METRICS = [
+    ("total_energy_joules", "Total CPU Energy (J)", True),
     ("hackbench_time_sec", "Hackbench time (s)", True),
     ("sysbench_tps", "Sysbench OLTP tps", False),
     ("sysbench_qps", "Sysbench OLTP qps", False),

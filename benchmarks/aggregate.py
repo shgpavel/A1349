@@ -175,6 +175,43 @@ def aggregate_timeseries(run_csvs):
     return out.drop(columns=["_phase_rank"])
 
 
+def aggregate_total_energy(run_csvs, intervals):
+    """Per-run total joules over workload phases → t-CI across runs.
+
+    Prefer raw `energy_joules` deltas (RAPL d_uj/1e6); fall back to
+    integrating `power_watts × interval` for legacy CSVs lacking the column.
+    Returns None if no run yields a value.
+    """
+    per_run = []
+    for csv_path, interval in zip(run_csvs, intervals, strict=False):
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception:
+            continue
+        if "phase" not in df.columns:
+            continue
+        df = df[df["phase"].isin(WORKLOAD_PHASES)]
+        if df.empty:
+            continue
+
+        total = None
+        if "energy_joules" in df.columns:
+            ej = pd.to_numeric(df["energy_joules"], errors="coerce").dropna()
+            if not ej.empty:
+                total = float(ej.sum())
+        if total is None and "power_watts" in df.columns:
+            pw = pd.to_numeric(df["power_watts"], errors="coerce").dropna()
+            if not pw.empty:
+                total = float(pw.sum()) * float(interval or 1.0)
+        if total is not None:
+            per_run.append(total)
+
+    if not per_run:
+        return None
+    m, s, lo, hi = t_ci(np.asarray(per_run, dtype=float))
+    return {"n": len(per_run), "mean": m, "std": s, "ci_lo": lo, "ci_hi": hi}
+
+
 def aggregate_oneshot(meta_files):
     """Per-key mean/std/CI across N runs from meta.json oneshot_runs blocks.
 
@@ -243,6 +280,20 @@ def process_level(level_dir):
 
         metas = sched_metas.get(sched, [])
         oneshot_summary[sched] = aggregate_oneshot(metas)
+
+        intervals = []
+        for mf in metas:
+            try:
+                with open(mf) as f:
+                    intervals.append(float(json.load(f).get("interval") or 1))
+            except (OSError, json.JSONDecodeError, TypeError):
+                intervals.append(1.0)
+        # Pad/truncate to len(csvs) so zip pairs correctly even if metas missing.
+        while len(intervals) < len(csvs):
+            intervals.append(1.0)
+        energy = aggregate_total_energy(csvs, intervals)
+        if energy is not None:
+            oneshot_summary[sched]["total_energy_joules"] = energy
 
     with open(level_dir / "oneshot_summary.json", "w") as f:
         json.dump(oneshot_summary, f, indent=2)
