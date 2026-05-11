@@ -29,20 +29,20 @@ import matplotlib.pyplot as plt
 # ---------------------------------------------------------------------------
 
 SCHED_COLORS = {
-    "default": "#1f77b4",  # blue
-    "s3": "#ff7f0e",  # orange
-    "LAVD": "#8c564b",  # brown
-    "s4": "#d62728",  # red
+    "default": "#1f77b4",   # blue
+    "scx_EEVDF": "#ff7f0e", # orange
+    "LAVD": "#8c564b",      # brown
+    "scx_A1349": "#2ca02c", # green
 }
 
 SCHED_LABELS = {
     "default": "Linux EEVDF",
-    "s3": "scx_EEVDF",
+    "scx_EEVDF": "scx_EEVDF",
     "LAVD": "scx_LAVD",
-    "s4": "scx_A1349",
+    "scx_A1349": "scx_A1349",
 }
 
-SCHED_ORDER = ["default", "s3", "LAVD", "s4"]
+SCHED_ORDER = ["default", "scx_EEVDF", "LAVD", "scx_A1349"]
 LATENCY_PERCENTILES = [("avg", "-"), ("p99", ":")]
 LATENCY_PLOTS = [
     ("sched_delay", "Задержка планирования", "latency_sched_delay"),

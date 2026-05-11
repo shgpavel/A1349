@@ -28,7 +28,7 @@ from pathlib import Path
 
 SESSION_RE = re.compile(r"^\d{8}_\d{6}$")
 LEVEL_ORDER = ["light", "moderate", "stress"]
-SCHED_ORDER = ["default", "s3", "LAVD", "s4"]
+SCHED_ORDER = ["default", "scx_EEVDF", "LAVD", "scx_A1349"]
 
 
 @dataclass(frozen=True)

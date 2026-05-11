@@ -19,7 +19,7 @@ ENDIAN      ?= $(shell printf '\1\0' | od -An -t x2 | awk '{print ($$1=="0001"?"
 LIBBPF_CFLAGS := $(shell pkg-config --cflags libbpf)
 LIBBPF_LIBS   := $(shell pkg-config --libs libbpf)
 
-SCHED_INC := $(SRC_DIR)/../impl/s3/scheds
+SCHED_INC := $(SRC_DIR)/../impl/scx_A1349/scheds
 
 BPF_CFLAGS := -g -O2 -Wall -Wno-compare-distinct-pointer-types \
 	-D__TARGET_ARCH_$(TARGET_ARCH) -mcpu=v3 -m$(ENDIAN)-endian

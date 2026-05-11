@@ -8,7 +8,7 @@ scheduler binary and the sched_latency BPF tool) are spawned under sudo.
 
 Usage:
     python3 collect.py --scheduler default --duration 300 --interval 1 --output results/
-    python3 collect.py --scheduler s3+ --sched-bin ../impl/s3+/build/scheds/c/scx_eevdf --duration 300
+    python3 collect.py --scheduler scx_EEVDF --sched-bin ../impl/scx_EEVDF/build/scheds/c/scx_eevdf --duration 300
     python3 collect.py --probe
 """
 
@@ -1131,7 +1131,7 @@ def main():
         "--probe", action="store_true", help="Check metric source availability and exit"
     )
     parser.add_argument(
-        "--scheduler", default="default", help="Scheduler name label (default, s3, s3+, LAVD, s4)"
+        "--scheduler", default="default", help="Scheduler name label (default, scx_EEVDF, LAVD, scx_A1349)"
     )
     parser.add_argument(
         "--sched-bin", default=None, help="Path to sched_ext scheduler binary to run"

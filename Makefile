@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 
-IMPL_DIRS := impl/s3 impl/s3+ impl/s4
+IMPL_DIRS := impl/scx_EEVDF impl/scx_A1349
 BENCHMARK_DIR := benchmarks
 PYTHON ?= python3
 SCX_DIR ?= ../scx

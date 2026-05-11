@@ -23,10 +23,9 @@ DEFAULT_LEVELS = ["light", "moderate", "stress"]
 
 SCHEDULERS = [
     #("default", None),
-    #("s3", "impl/s3/build/scheds/c/scx_eevdf"),
-    # ("s3+", "impl/s3+/build/scheds/c/scx_eevdf"),
+    #("scx_EEVDF", "impl/scx_EEVDF/build/scheds/c/scx_eevdf"),
     #("LAVD", None),  # filled in from --lavd-bin
-    ("s4", "impl/s4/build/scheds/c/scx_auction"),
+    ("scx_A1349", "impl/scx_A1349/build/scheds/c/scx_A1349"),
 ]
 
 

@@ -34,17 +34,17 @@ _RUN_CACHE: dict[tuple[str, str], list[pd.DataFrame]] = {}
 
 SCHED_COLORS = {
     "default": "#1f77b4",
-    "s3": "#ff7f0e",
+    "scx_EEVDF": "#ff7f0e",
     "LAVD": "#8c564b",
-    "s4": "#d62728",
+    "scx_A1349": "#2ca02c",
 }
 SCHED_LABELS = {
     "default": "Linux EEVDF",
-    "s3": "scx_EEVDF",
+    "scx_EEVDF": "scx_EEVDF",
     "LAVD": "scx_LAVD",
-    "s4": "scx_A1349",
+    "scx_A1349": "scx_A1349",
 }
-SCHED_ORDER = ["default", "s3", "LAVD", "s4"]
+SCHED_ORDER = ["default", "scx_EEVDF", "LAVD", "scx_A1349"]
 LEVEL_ORDER = ["light", "moderate", "stress"]
 
 # Metrics to compare across levels.

@@ -32,9 +32,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 SCHED_COLORS = {
     "default": "#404040",
-    "s3": "#A0A0A0",
+    "scx_EEVDF": "#A0A0A0",
     "LAVD": "#000000",
-    "s4": "#707070",
+    "scx_A1349": "#303030",
 }
 
 # Theme colors
@@ -44,11 +44,11 @@ ACCENT_COLOR = "#000000"
 GRID_COLOR = "#CCCCCC"
 SCHED_LABELS = {
     "default": "Linux EEVDF",
-    "s3": "scx_EEVDF",
+    "scx_EEVDF": "scx_EEVDF",
     "LAVD": "scx_LAVD",
-    "s4": "scx_A1349",
+    "scx_A1349": "scx_A1349",
 }
-SCHED_ORDER = ["default", "s3", "LAVD", "s4"]
+SCHED_ORDER = ["default", "scx_EEVDF", "LAVD", "scx_A1349"]
 
 
 def color_for(sched):
