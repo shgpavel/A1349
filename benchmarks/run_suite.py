@@ -22,10 +22,10 @@ from pathlib import Path
 DEFAULT_LEVELS = ["light", "moderate", "stress"]
 
 SCHEDULERS = [
-    # ("default", None),
-    # ("s3", "impl/s3/build/scheds/c/scx_eevdf"),
+    #("default", None),
+    #("s3", "impl/s3/build/scheds/c/scx_eevdf"),
     # ("s3+", "impl/s3+/build/scheds/c/scx_eevdf"),
-    # ("LAVD", None),  # filled in from --lavd-bin
+    #("LAVD", None),  # filled in from --lavd-bin
     ("s4", "impl/s4/build/scheds/c/scx_auction"),
 ]
 

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0
  *
- * scx_auction — userspace manager for the VCG auction scheduler (s4/A1349).
+ * scx_A1349 — userspace manager for the VCG auction scheduler (s4/A1349).
  *
  * Responsibilities:
  *   1. Read per-CPU capacities from sysfs and populate BPF maps
@@ -21,7 +21,7 @@
 #include <errno.h>
 #include <getopt.h>
 
-#include "scx_auction.bpf.skel.h"
+#include "scx_A1349.bpf.skel.h"
 
 static volatile int exit_req;
 
@@ -59,7 +59,7 @@ struct auction_ctx {
  * Returns true if any value changed.
  */
 static bool
-refresh_cpu_capacities(struct scx_auction *skel,
+refresh_cpu_capacities(struct scx_A1349 *skel,
 		       __u32 cost_p, __u32 cost_e,
 		       bool force_log)
 {
@@ -217,7 +217,7 @@ usage(const char *prog)
 int
 main(int argc, char **argv)
 {
-	struct scx_auction *skel;
+	struct scx_A1349 *skel;
 	struct bpf_link    *link;
 	int                 opt;
 	/*
@@ -274,7 +274,7 @@ main(int argc, char **argv)
 		return 1;
 	}
 
-	skel = scx_auction__open();
+	skel = scx_A1349__open();
 	if (!skel) {
 		fprintf(stderr, "Failed to open BPF skeleton\n");
 		return 1;
@@ -283,9 +283,9 @@ main(int argc, char **argv)
 	skel->struct_ops.auction_ops->hotplug_seq = scx_hotplug_seq();
 	SCX_ENUM_INIT(skel);
 
-	if (scx_auction__load(skel)) {
+	if (scx_A1349__load(skel)) {
 		fprintf(stderr, "Failed to load BPF skeleton\n");
-		scx_auction__destroy(skel);
+		scx_A1349__destroy(skel);
 		return 1;
 	}
 
@@ -298,7 +298,7 @@ main(int argc, char **argv)
 	link = bpf_map__attach_struct_ops(skel->maps.auction_ops);
 	if (!link) {
 		fprintf(stderr, "Failed to attach struct ops\n");
-		scx_auction__destroy(skel);
+		scx_A1349__destroy(skel);
 		return 1;
 	}
 
@@ -313,6 +313,6 @@ main(int argc, char **argv)
 	}
 
 	bpf_link__destroy(link);
-	scx_auction__destroy(skel);
+	scx_A1349__destroy(skel);
 	return 0;
 }

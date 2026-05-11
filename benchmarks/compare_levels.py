@@ -39,10 +39,10 @@ SCHED_COLORS = {
     "s4": "#d62728",
 }
 SCHED_LABELS = {
-    "default": "Linux EEVDF (baseline)",
+    "default": "Linux EEVDF",
     "s3": "scx_EEVDF",
     "LAVD": "scx_LAVD",
-    "s4": "scx_auction",
+    "s4": "scx_A1349",
 }
 SCHED_ORDER = ["default", "s3", "LAVD", "s4"]
 LEVEL_ORDER = ["light", "moderate", "stress"]
@@ -50,29 +50,29 @@ LEVEL_ORDER = ["light", "moderate", "stress"]
 # Metrics to compare across levels.
 # (base column, label, lower_is_better or None)
 TS_METRICS = [
-    ("sched_delay_avg_ns", "Sched Delay avg (ns)", True),
-    ("sched_delay_p99_ns", "Sched Delay p99 (ns)", True),
-    ("runqueue_avg_ns", "Runqueue avg (ns)", True),
-    ("runqueue_p99_ns", "Runqueue p99 (ns)", True),
-    ("wakeup_p99_ns", "Wakeup p99 (ns)", True),
-    ("preemption_p99_ns", "Preemption p99 (ns)", True),
-    ("idle_wakeup_p99_ns", "Idle Wakeup p99 (ns)", True),
-    ("migration_p99_ns", "Migration p99 (ns)", True),
-    ("slice_avg_ns", "Slice Duration avg (ns)", None),
-    ("cpu_util_pct", "CPU Utilization (%)", None),
-    ("ctx_switches_per_sec", "Context Switches/s", None),
-    ("power_watts", "Power (W)", True),
+    ("sched_delay_avg_ns", "Задержка планирования сред. (нс)", True),
+    ("sched_delay_p99_ns", "Задержка планирования p99 (нс)", True),
+    ("runqueue_avg_ns", "Очередь готовых сред. (нс)", True),
+    ("runqueue_p99_ns", "Очередь готовых p99 (нс)", True),
+    ("wakeup_p99_ns", "Пробуждение p99 (нс)", True),
+    ("preemption_p99_ns", "Вытеснение p99 (нс)", True),
+    ("idle_wakeup_p99_ns", "Пробуждение из простоя p99 (нс)", True),
+    ("migration_p99_ns", "Миграция p99 (нс)", True),
+    ("slice_avg_ns", "Длительность кванта сред. (нс)", None),
+    ("cpu_util_pct", "Загрузка CPU (%)", None),
+    ("ctx_switches_per_sec", "Переключения контекста/с", None),
+    ("power_watts", "Мощность (Вт)", True),
 ]
 
 ONESHOT_METRICS = [
-    ("total_energy_joules", "Total CPU Energy (J)", True),
-    ("hackbench_time_sec", "Hackbench time (s)", True),
-    ("sysbench_tps", "Sysbench OLTP tps", False),
-    ("sysbench_qps", "Sysbench OLTP qps", False),
-    ("schbench_wakeup_p99_0_usec", "schbench Wakeup p99 (us)", True),
-    ("schbench_wakeup_p99_9_usec", "schbench Wakeup p99.9 (us)", True),
-    ("schbench_request_p99_0_usec", "schbench Request p99 (us)", True),
-    ("schbench_avg_rps", "schbench avg RPS", False),
+    ("total_energy_joules", "Суммарная энергия CPU (Дж)", True),
+    ("hackbench_time_sec", "Hackbench: время (с)", True),
+    ("sysbench_tps", "Sysbench OLTP трз/с", False),
+    ("sysbench_qps", "Sysbench OLTP зпр/с", False),
+    ("schbench_wakeup_p99_0_usec", "schbench: пробуждение p99 (мкс)", True),
+    ("schbench_wakeup_p99_9_usec", "schbench: пробуждение p99.9 (мкс)", True),
+    ("schbench_request_p99_0_usec", "schbench: запрос p99 (мкс)", True),
+    ("schbench_avg_rps", "schbench: средний RPS", False),
 ]
 
 
@@ -269,16 +269,16 @@ def grouped_bar(ax, scheds, levels, values, errs_lo, errs_hi, title, ylabel, low
     ax.set_ylim(ymin, ymax * 1.15)
 
     note = (
-        " (lower is better)"
+        " (меньше — лучше)"
         if lower_better
-        else (" (higher is better)" if lower_better is False else "")
+        else (" (больше — лучше)" if lower_better is False else "")
     )
     ax.set_title(title + note, fontsize=10)
     ax.set_ylabel(ylabel, fontsize=9)
     ax.set_xticks(x)
     ax.set_xticklabels([label_for(s) for s in scheds], rotation=0, fontsize=8)
     ax.grid(True, alpha=0.3, axis="y")
-    ax.legend(title=f"Level (% vs {label_for(BASELINE_SCHED)})", fontsize=7, title_fontsize=8)
+    ax.legend(title=f"Уровень (% от {label_for(BASELINE_SCHED)})", fontsize=7, title_fontsize=8)
 
 
 def plot_grouped_bar_metric(
@@ -382,15 +382,15 @@ def plot_line_vs_level(
         return
 
     note = (
-        " (lower is better)"
+        " (меньше — лучше)"
         if lower_better
-        else (" (higher is better)" if lower_better is False else "")
+        else (" (больше — лучше)" if lower_better is False else "")
     )
     ax.set_title(label + note, fontsize=10)
     ax.set_ylabel(label, fontsize=9)
     ax.set_xticks(x)
     ax.set_xticklabels(levels, fontsize=9)
-    ax.set_xlabel("Workload Level", fontsize=9)
+    ax.set_xlabel("Уровень нагрузки", fontsize=9)
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
     fig.tight_layout()
@@ -403,7 +403,7 @@ def plot_line_vs_level(
 def write_summary_table(aggs, oneshots, scheds, levels, output_dir):
     """One PDF: rows = metric, cols = per (level, sched) cell with mean (CI)."""
     rows = []
-    headers = ["Metric"] + [f"{lv}\n{label_for(s)}" for lv in levels for s in scheds]
+    headers = ["Метрика"] + [f"{lv}\n{label_for(s)}" for lv in levels for s in scheds]
 
     def fmt(m, lo, hi):
         if m is None or np.isnan(m):
@@ -451,7 +451,7 @@ def write_summary_table(aggs, oneshots, scheds, levels, output_dir):
     fig_h = 0.55 * len(rows) + 2
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     ax.axis("off")
-    ax.set_title("Cross-Level Benchmark Summary (mean [95% CI])", fontsize=11, pad=12)
+    ax.set_title("Сводка результатов по уровням нагрузки (среднее [95% ДИ])", fontsize=11, pad=12)
     tbl = ax.table(cellText=rows, colLabels=headers, loc="center", cellLoc="center")
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(7)

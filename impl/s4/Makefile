@@ -5,7 +5,7 @@
 # Top-level Makefile for s4 (VCG auction scheduler).
 # Mirrors the s3+ build system; delegates out-of-source build to ./build/.
 
-C_SCHEDS := scx_auction
+C_SCHEDS := scx_A1349
 
 ifeq ("$(origin O)", "command line")
   KBUILD_OUTPUT := $(abspath $(O))

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0
  *
- * scx_auction — Dynamic VCG Auction Scheduler for Heterogeneous CPUs (s4/A1349)
+ * scx_A1349 — Dynamic VCG Auction Scheduler for Heterogeneous CPUs (s4/A1349)
  *
  * Maps the Vickrey auction model (hetero_scheduler_model.md) to sched_ext:
  *
@@ -8,8 +8,8 @@
  *   ──────────────────────  ────────────────────────────────────────────────────
  *   valuation v_i           task->scx.weight  (Linux nice/priority)
  *   length l_i              EWMA of observed run-time ns per activation
- *   effective value φ_P     v*slice - C_P * l_ns       (ns units, no quantization)
- *   effective value φ_E     v*slice - C_E * l_ns * σ   (σ = max_cap/min_cap)
+ *   effective value φ_P     v*slice - C_P * l_ns           (ns units, no quantization)
+ *   effective value φ_E     v*slice/σ - C_E * l_ns         (σ = max_cap/min_cap)
  *   allocation κ ∈ {P,E}    DSQ chosen by argmax φ_κ
  *   VCG payment p_i         posted price: C_κ * consumed_ns / slice (§6.3 approx.)
  *   budget B_i              token bucket; time-based replenishment ∝ weight
@@ -25,10 +25,10 @@
  * ordering.  On homogeneous (σ=1): all tasks go to DSQ_E; work-stealing serves
  * both DSQs so behaviour degenerates to EEVDF-equivalent.
  *
- * Virtual-time accounting (stopping callback) is taken directly from s3+:
- *   svc_vtime = consumed_ns * cpu_cap * SCALE / CAPACITY_SCALE
- * so faster cores advance a task's virtual time faster — correct for fairness
- * across P-cores and E-cores.
+ * Virtual-time accounting (stopping callback) follows the EEVDF model:
+ *   svc_vtime = consumed_ns * SCALE
+ * with Δv_i = svc / w_i and ΔV = svc / Σ w_j.  No capacity correction —
+ * P-cores and E-cores advance virtual time at the same rate per ns.
  */
 
 #include <scx/common.bpf.h>
@@ -476,15 +476,16 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 		budget_replenish(tctx, bpf_ktime_get_ns());
 
 	/*
-	 * Virtual-time eligibility and deadline (EEVDF kernel, same as s3+).
-	 * q_max = max_cap * slice / CAPACITY_SCALE  (capacity-normalised quantum).
-	 * Must use SLICE_P, not SLICE_MAX — this is the EEVDF deadline gap, a
-	 * latency control.  Using SLICE_MAX doubles the gap, loosens deadlines,
-	 * and regresses wake/request p99 under contention.
+	 * Virtual-time eligibility and deadline (pure EEVDF model).
+	 * q_max = AUCTION_SLICE_P  — request length q from the model, no
+	 * capacity scaling.  Must use SLICE_P, not SLICE_MAX — this is the
+	 * EEVDF deadline gap, a latency control.  Using SLICE_MAX doubles
+	 * the gap, loosens deadlines, and regresses wake/request p99 under
+	 * contention.
 	 */
 	v_now  = rt->vtime_now;
 	ve     = p->scx.dsq_vtime;
-	q_max  = (u64)max_cap * AUCTION_SLICE_P / CAPACITY_SCALE;
+	q_max  = AUCTION_SLICE_P;
 	min_ve = (v_now > q_max) ? (v_now - q_max) : 0;
 
 	if (time_before(ve, min_ve))
@@ -1020,11 +1021,13 @@ BPF_STRUCT_OPS(auction_stopping, struct task_struct *p, bool runnable)
 	cost_e = gdata->cost_e ?: C_E_DEF;
 
 	/*
-	 * Virtual-time advance (s3+ formula, capacity-weighted):
-	 *   svc = consumed * cap / CAPACITY_SCALE
-	 * Faster cores advance task vtime more, keeping virtual-time fair.
+	 * Virtual-time advance matches the EEVDF model exactly:
+	 *   Δv_i  = consumed * SCALE / w_i
+	 *   ΔV(t) = consumed * SCALE / Σ w_j
+	 * No capacity-weighting: faster and slower cores advance the same
+	 * amount of virtual time per ns consumed.
 	 */
-	svc_vtime = consumed * cap * SCALE / CAPACITY_SCALE;
+	svc_vtime = consumed * SCALE;
 	p->scx.dsq_vtime += div_by_weight(svc_vtime, weight, tctx);
 
 	if (rt && rt->total_weight)

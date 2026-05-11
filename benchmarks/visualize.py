@@ -36,72 +36,72 @@ SCHED_COLORS = {
 }
 
 SCHED_LABELS = {
-    "default": "Linux EEVDF (baseline)",
+    "default": "Linux EEVDF",
     "s3": "scx_EEVDF",
     "LAVD": "scx_LAVD",
-    "s4": "scx_auction",
+    "s4": "scx_A1349",
 }
 
 SCHED_ORDER = ["default", "s3", "LAVD", "s4"]
 LATENCY_PERCENTILES = [("avg", "-"), ("p99", ":")]
 LATENCY_PLOTS = [
-    ("sched_delay", "Schedule Delay", "latency_sched_delay"),
-    ("runqueue", "Runqueue Latency", "latency_runqueue"),
-    ("wakeup", "Wakeup Latency", "latency_wakeup"),
-    ("preemption", "Preemption Latency", "latency_preemption"),
-    ("idle_wakeup", "Idle CPU Wakeup", "latency_idle_wakeup"),
-    ("migration", "Migration Latency", "latency_migration"),
-    ("slice", "Slice Duration", "latency_slice"),
-    ("sleep", "Sleep Duration", "latency_sleep"),
+    ("sched_delay", "Задержка планирования", "latency_sched_delay"),
+    ("runqueue", "Задержка в очереди готовых", "latency_runqueue"),
+    ("wakeup", "Задержка пробуждения", "latency_wakeup"),
+    ("preemption", "Задержка вытеснения", "latency_preemption"),
+    ("idle_wakeup", "Пробуждение CPU из простоя", "latency_idle_wakeup"),
+    ("migration", "Задержка миграции", "latency_migration"),
+    ("slice", "Длительность кванта", "latency_slice"),
+    ("sleep", "Длительность сна", "latency_sleep"),
 ]
 THROUGHPUT_PLOTS = [
     (
         "hackbench_time_sec",
         "throughput_hackbench",
-        "Hackbench Time",
-        "hackbench time (s)",
+        "Hackbench: время выполнения",
+        "время hackbench (с)",
         True,
     ),
     (
         "sysbench_tps",
         "throughput_sysbench_tps",
-        "Sysbench OLTP Throughput",
-        "sysbench (tps)",
+        "Sysbench OLTP: пропускная способность",
+        "sysbench (трз/с)",
         False,
     ),
     (
         "sysbench_qps",
         "throughput_sysbench_qps",
-        "Sysbench OLTP Queries",
-        "sysbench (qps)",
+        "Sysbench OLTP: запросы",
+        "sysbench (зпр/с)",
         False,
     ),
     (
         "schbench_wakeup_p99_0_usec",
         "schbench_wakeup_p99",
-        "schbench Wakeup Latency p99",
-        "wakeup p99 (usec)",
+        "schbench: задержка пробуждения p99",
+        "пробуждение p99 (мкс)",
         True,
     ),
     (
         "schbench_wakeup_p99_9_usec",
         "schbench_wakeup_p99_9",
-        "schbench Wakeup Latency p99.9",
-        "wakeup p99.9 (usec)",
+        "schbench: задержка пробуждения p99.9",
+        "пробуждение p99.9 (мкс)",
         True,
     ),
     (
         "schbench_request_p99_0_usec",
         "schbench_request_p99",
-        "schbench Request Latency p99",
-        "request p99 (usec)",
+        "schbench: задержка запроса p99",
+        "запрос p99 (мкс)",
         True,
     ),
     (
         "schbench_avg_rps",
         "schbench_avg_rps",
-        "schbench Average RPS",
-        "avg RPS",
+        "schbench: средний RPS",
+        "средний RPS",
         False,
     ),
 ]
@@ -119,7 +119,7 @@ def add_no_data(ax):
     ax.text(
         0.5,
         0.5,
-        "No data",
+        "Нет данных",
         transform=ax.transAxes,
         ha="center",
         va="center",
@@ -217,7 +217,7 @@ def plot_line_metric(
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.set_title(title)
     ax.set_ylabel(ylabel)
-    ax.set_xlabel("Elapsed (s)")
+    ax.set_xlabel("Время (с)")
 
     has_data = False
     for sched, sdf, vals in iter_scheduler_series(data, scheds, column):
@@ -225,7 +225,7 @@ def plot_line_metric(
             sdf["elapsed_s"],
             vals,
             color=color_for(sched),
-            label=sched,
+            label=label_for(sched),
             alpha=0.8,
         )
         lo, hi = ci_bounds(sdf, column)
@@ -273,7 +273,7 @@ def plot_bar_metric(
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.set_title(title)
-    note = " (lower is better)" if lower_better else " (higher is better)"
+    note = " (меньше — лучше)" if lower_better else " (больше — лучше)"
     ax.set_ylabel(ylabel + note)
 
     values = []
@@ -436,7 +436,7 @@ def plot_latency_timeseries(data, scheds, output_dir):
                     sdf["elapsed_s"],
                     vals,
                     color=color_for(sched),
-                    label=sched,
+                    label=label_for(sched),
                     alpha=0.8,
                 )
                 lo, hi = ci_bounds(sdf, col)
@@ -451,9 +451,9 @@ def plot_latency_timeseries(data, scheds, output_dir):
                     )
                 has_data = True
 
-            ax.set_title(f"{title} {pct.upper()} Over Time")
-            ax.set_ylabel("ns")
-            ax.set_xlabel("Elapsed (s)")
+            ax.set_title(f"{title} {pct.upper()} во времени")
+            ax.set_ylabel("нс")
+            ax.set_xlabel("Время (с)")
             if has_data:
                 add_legend(ax, fontsize=8)
             else:
@@ -475,7 +475,7 @@ def plot_cpu_util(data, scheds, output_dir):
         scheds,
         output_dir,
         "cpu_utilization",
-        "CPU Utilization Over Time",
+        "Загрузка CPU во времени",
         "CPU %",
         "cpu_util_pct",
         ylim=(0, 105),
@@ -494,8 +494,8 @@ def plot_ctx_switches(data, scheds, output_dir):
         scheds,
         output_dir,
         "ctx_switches",
-        "Context Switch Rate Over Time",
-        "Switches/sec",
+        "Частота переключений контекста во времени",
+        "Переключений/с",
         "ctx_switches_per_sec",
         require_all_scheds=True,
     )
@@ -516,8 +516,8 @@ def plot_power(data, scheds, output_dir):
         scheds,
         output_dir,
         "power",
-        "Power Consumption Over Time",
-        "Watts",
+        "Потребляемая мощность во времени",
+        "Вт",
         col,
         require_all_scheds=True,
     )
@@ -575,7 +575,7 @@ def plot_throughput(data, scheds, output_dir, metadata=None):
 
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.set_title(title)
-        note = " (lower is better)" if lower_better else " (higher is better)"
+        note = " (меньше — лучше)" if lower_better else " (больше — лучше)"
         ax.set_ylabel(ylabel + note)
 
         yerr = [err_lo, err_hi] if any(err_lo) or any(err_hi) else None
@@ -613,25 +613,25 @@ def plot_throughput(data, scheds, output_dir, metadata=None):
 # ---------------------------------------------------------------------------
 
 SUMMARY_METRICS = [
-    ("cpu_util_pct", "CPU Utilization (%)", False),
-    ("ctx_switches_per_sec", "Context Switches/s", None),
-    ("power_watts", "Power (W)", True),
-    ("sched_delay_avg_ns", "Sched Delay avg (ns)", True),
-    ("sched_delay_p99_ns", "Sched Delay p99 (ns)", True),
-    ("runqueue_avg_ns", "Runqueue avg (ns)", True),
-    ("runqueue_p99_ns", "Runqueue p99 (ns)", True),
-    ("wakeup_avg_ns", "Wakeup avg (ns)", True),
-    ("wakeup_p99_ns", "Wakeup p99 (ns)", True),
-    ("preemption_avg_ns", "Preemption avg (ns)", True),
-    ("preemption_p99_ns", "Preemption p99 (ns)", True),
-    ("idle_wakeup_avg_ns", "Idle Wakeup avg (ns)", True),
-    ("idle_wakeup_p99_ns", "Idle Wakeup p99 (ns)", True),
-    ("migration_avg_ns", "Migration avg (ns)", True),
-    ("migration_p99_ns", "Migration p99 (ns)", True),
-    ("slice_avg_ns", "Slice Duration avg (ns)", None),
-    ("slice_p99_ns", "Slice Duration p99 (ns)", None),
-    ("sleep_avg_ns", "Sleep Duration avg (ns)", None),
-    ("sleep_p99_ns", "Sleep Duration p99 (ns)", None),
+    ("cpu_util_pct", "Загрузка CPU (%)", False),
+    ("ctx_switches_per_sec", "Переключения контекста/с", None),
+    ("power_watts", "Мощность (Вт)", True),
+    ("sched_delay_avg_ns", "Задержка планирования сред. (нс)", True),
+    ("sched_delay_p99_ns", "Задержка планирования p99 (нс)", True),
+    ("runqueue_avg_ns", "Очередь готовых сред. (нс)", True),
+    ("runqueue_p99_ns", "Очередь готовых p99 (нс)", True),
+    ("wakeup_avg_ns", "Пробуждение сред. (нс)", True),
+    ("wakeup_p99_ns", "Пробуждение p99 (нс)", True),
+    ("preemption_avg_ns", "Вытеснение сред. (нс)", True),
+    ("preemption_p99_ns", "Вытеснение p99 (нс)", True),
+    ("idle_wakeup_avg_ns", "Пробуждение из простоя сред. (нс)", True),
+    ("idle_wakeup_p99_ns", "Пробуждение из простоя p99 (нс)", True),
+    ("migration_avg_ns", "Миграция сред. (нс)", True),
+    ("migration_p99_ns", "Миграция p99 (нс)", True),
+    ("slice_avg_ns", "Длительность кванта сред. (нс)", None),
+    ("slice_p99_ns", "Длительность кванта p99 (нс)", None),
+    ("sleep_avg_ns", "Длительность сна сред. (нс)", None),
+    ("sleep_p99_ns", "Длительность сна p99 (нс)", None),
 ]
 
 
@@ -644,17 +644,17 @@ def write_summary(data, scheds, metadata, output_dir):
 
     # One-shot benchmarks from metadata
     oneshot_metrics = [
-        ("hackbench_time_sec", "Hackbench (s)", True),
-        ("sysbench_tps", "Sysbench OLTP (tps)", False),
-        ("sysbench_qps", "Sysbench OLTP (qps)", False),
-        ("schbench_wakeup_p99_0_usec", "schbench wakeup p99 (us)", True),
-        ("schbench_wakeup_p99_9_usec", "schbench wakeup p99.9 (us)", True),
-        ("schbench_request_p99_0_usec", "schbench request p99 (us)", True),
-        ("schbench_avg_rps", "schbench avg RPS", False),
+        ("hackbench_time_sec", "Hackbench (с)", True),
+        ("sysbench_tps", "Sysbench OLTP (трз/с)", False),
+        ("sysbench_qps", "Sysbench OLTP (зпр/с)", False),
+        ("schbench_wakeup_p99_0_usec", "schbench пробуждение p99 (мкс)", True),
+        ("schbench_wakeup_p99_9_usec", "schbench пробуждение p99.9 (мкс)", True),
+        ("schbench_request_p99_0_usec", "schbench запрос p99 (мкс)", True),
+        ("schbench_avg_rps", "schbench средний RPS", False),
     ]
 
     # Build table rows: each row = [metric_label, val_sched1, val_sched2, ...]
-    col_headers = ["Metric"] + [label_for(s) for s in scheds]
+    col_headers = ["Метрика"] + [label_for(s) for s in scheds]
     table_rows = []
 
     # Time-series metrics
@@ -684,7 +684,7 @@ def write_summary(data, scheds, metadata, output_dir):
                     cell += f"\n({pct:+.1f}%)"
                 row.append(cell)
             else:
-                row.append("N/A")
+                row.append("—")
 
         table_rows.append(row)
 
@@ -705,7 +705,7 @@ def write_summary(data, scheds, metadata, output_dir):
                     cell += f"\n({pct:+.1f}%)"
                 row.append(cell)
             else:
-                row.append("N/A")
+                row.append("—")
 
         table_rows.append(row)
 
@@ -715,7 +715,7 @@ def write_summary(data, scheds, metadata, output_dir):
     # Render as PDF table
     fig, ax = plt.subplots(figsize=(10, 0.4 * len(table_rows) + 1.5))
     ax.axis("off")
-    ax.set_title("Benchmark Summary", fontsize=12, pad=10)
+    ax.set_title("Сводка результатов", fontsize=12, pad=10)
 
     table = ax.table(
         cellText=table_rows,

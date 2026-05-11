@@ -14,7 +14,7 @@ ifeq ($(LIB_OBJ_DIR),)
   LIB_BPF_OBJ := ../../lib/lib.bpf.o
 endif
 
-C_SCHEDS := scx_auction
+C_SCHEDS := scx_A1349
 
 ALL_SCHEDS := $(addprefix $(OBJ_DIR)/,$(C_SCHEDS))
 

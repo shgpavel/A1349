@@ -19,8 +19,8 @@ import matplotlib
 import pandas as pd
 
 matplotlib.use("Agg")
-matplotlib.rcParams["text.usetex"] = True
-matplotlib.rcParams["font.family"] = "serif"
+matplotlib.rcParams["text.usetex"] = False
+matplotlib.rcParams["font.family"] = "DejaVu Serif"
 matplotlib.rcParams["ps.fonttype"] = 42
 matplotlib.rcParams["pdf.fonttype"] = 42
 import matplotlib.gridspec as gridspec  # noqa: E402
@@ -43,10 +43,10 @@ TEXT_COLOR = "#000000"
 ACCENT_COLOR = "#000000"
 GRID_COLOR = "#CCCCCC"
 SCHED_LABELS = {
-    "default": "Linux EEVDF (baseline)",
-    "s3": r"scx\_EEVDF",
-    "LAVD": r"scx\_LAVD",
-    "s4": r"scx\_auction",
+    "default": "Linux EEVDF",
+    "s3": "scx_EEVDF",
+    "LAVD": "scx_LAVD",
+    "s4": "scx_A1349",
 }
 SCHED_ORDER = ["default", "s3", "LAVD", "s4"]
 
@@ -129,13 +129,13 @@ def metric_series(frame, column):
 
 # Time-series panels: (column, title, ylabel)
 TIMESERIES_PANELS = [
-    ("sched_delay_p99_ns", "Schedule Delay (p99)", "Latency (ns)"),
+    ("sched_delay_p99_ns", "Задержка планирования (p99)", "Задержка (нс)"),
 ]
 
 # Bar panels: (metadata_key, title, ylabel, lower_is_better)
 BAR_PANELS = [
-    ("hackbench_time_sec", "Hackbench", "Time (s)", True),
-    ("sysbench_tps", "Sysbench OLTP", "Transactions/s", False),
+    ("hackbench_time_sec", "Hackbench", "Время (с)", True),
+    ("sysbench_tps", "Sysbench OLTP", "Транзакций/с", False),
 ]
 
 
@@ -154,7 +154,7 @@ def plot_timeseries_panel(ax, data, scheds, column, title, ylabel):
     """Plot a single time-series panel on the given axes."""
     ax.set_title(title, fontsize=9, fontweight="bold")
     ax.set_ylabel(ylabel, fontsize=8)
-    ax.set_xlabel("Elapsed (s)", fontsize=8)
+    ax.set_xlabel("Время (с)", fontsize=8)
 
     for sched in scheds:
         sdf = data[data["scheduler"] == sched]
@@ -179,7 +179,7 @@ def plot_bar_panel(ax, data, scheds, metadata, col_key, title, ylabel, lower_bet
     """Plot a single bar-chart panel on the given axes."""
     ax.set_title(title, fontsize=9, fontweight="bold")
 
-    note = "\n(lower is better)" if lower_better else "\n(higher is better)"
+    note = "\n(меньше — лучше)" if lower_better else "\n(больше — лучше)"
     ax.set_ylabel(ylabel + note, fontsize=8)
 
     values, labels, colors = [], [], []
@@ -206,7 +206,7 @@ def plot_bar_panel(ax, data, scheds, metadata, col_key, title, ylabel, lower_bet
         ax.text(
             0.5,
             0.5,
-            "No data",
+            "Нет данных",
             transform=ax.transAxes,
             ha="center",
             va="center",
