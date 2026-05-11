@@ -36,19 +36,20 @@ char _license[] SEC("license") = "GPL";
 #define P_CAP_PCT           90u
 
 /* Default per-quantum costs c_P, c_E.  Userspace overrides via global_data. */
-#define C_P_DEF             1024u
-#define C_E_DEF             512u
+#define C_P_DEF             512u
+#define C_E_DEF             256u
 
 /*
  * Budget token bucket (theory §2.4 budget mechanism).
  *   B_i^max     = w_i · BUDGET_MUL
  *   replenish    = min(idle_ns, REPLENISH_IDLE_CAP) · w_i / REPLENISH_DIV
- * Magnitudes chosen so a fully-idled task refills its bucket on the order of
- * one second of wall time and a moderate VCG payment (≈ φ · few quanta) is
- * always payable from a fresh budget.
+ *
+ * Sized to the rescaled φ magnitude (φ in weight-units after compute_phi
+ * divides ns-cost by SLICE_P).  Default-nice task (weight=1024) gets
+ * budget_max = 2.05e6, refills ~5%/s of idle for that weight.
  */
-#define BUDGET_MUL          (1ULL << 24)
-#define REPLENISH_DIV       (1ULL << 14)
+#define BUDGET_MUL          2000ULL
+#define REPLENISH_DIV       5000000ULL
 #define REPLENISH_IDLE_CAP  1000000000ULL
 
 /*
@@ -90,9 +91,20 @@ char _license[] SEC("license") = "GPL";
 #define AUCTION_DSQ_P       1ULL
 #define AUCTION_DSQ_E       2ULL
 #define AUCTION_DSQ_STARVED 3ULL
+/*
+ * Per-CPU sticky DSQs (cache-warm hold for long-running preempted tasks).
+ * Indexed AUCTION_DSQ_PERCPU_BASE + cpu.  A task with len_est_ns ≥ SLICE_P
+ * that gets preempted lands in the CPU's sticky DSQ instead of the shared
+ * cluster DSQ — the next dispatch on the same CPU picks it back up before
+ * any cluster work-steal, preserving L1/L2 locality across the preempt
+ * cycle.  Without this, long memory-bound tasks scatter across the cluster
+ * and PassMark MEM/MEM_LAT regress sharply.
+ */
+#define AUCTION_DSQ_PERCPU_BASE 100ULL
+#define AUCTION_NCPU_MAX        64
 
 /* Maximum auction retries per dispatch tick (top, runner, …). */
-#define DISPATCH_AUCTION_TRIES 8
+#define DISPATCH_AUCTION_TRIES 3
 
 /* ── maps ────────────────────────────────────────────────────────────────── */
 
@@ -237,14 +249,20 @@ encode_phi(s64 phi)
 }
 
 /*
- * Compute φ_P and φ_E for a task (continuous-ns formulation of eq:phi).
+ * Compute φ_P and φ_E for a task (eq:phi, rescaled to weight-units).
  *
- *   φ_P = w · SLICE_P                  − c_P · len_ns
- *   φ_E = w · SLICE_P · η_E / η_P      − c_E · len_ns
+ *   l_q  = len_ns / SLICE_P            (length in P-quanta, continuous)
+ *   φ_P = w           − c_P · l_q
+ *   φ_E = w · η_E/η_P − c_E · l_q
  *
- * The η_E/η_P factor on the value side encodes the fact that an E-quantum
- * delivers σ⁻¹ as much useful work; the cost side uses c_E < c_P.
- * Result is in (weight × ns) units, consistent with both φ_κ summands.
+ * Earlier (weight × ns) formulation produced |φ| ≈ 1e10, which dominated
+ * the budget scale and pushed VCG payments to either clamp at zero (free)
+ * or drain the bucket in a single dispatch.  Dividing by SLICE_P
+ * normalises φ to the same magnitude as the weight (≈ 1..50000), making
+ * the budget and replenishment constants from s4 directly reusable.
+ *
+ * Integer-only: cost_κ · len_ns is rounded by adding SLICE_P/2 before the
+ * division to avoid systematic truncation bias on sub-quantum tasks.
  */
 static __always_inline void
 compute_phi(u32 weight, u64 len_ns,
@@ -254,13 +272,14 @@ compute_phi(u32 weight, u64 len_ns,
 {
 	u32 mx = max_cap ? max_cap : CAPACITY_SCALE;
 	u32 mc = min_cap ? min_cap : mx;
-	u64 w_slice_p = (u64)weight * AUCTION_SLICE_P;
-	u64 w_slice_e = w_slice_p * (u64)mc / (u64)mx;
-	u64 cost_p_ns = (u64)cost_p * len_ns;
-	u64 cost_e_ns = (u64)cost_e * len_ns;
+	u64 w_e = (u64)weight * (u64)mc / (u64)mx;
+	u64 cost_p_q = ((u64)cost_p * len_ns + AUCTION_SLICE_P / 2)
+		       / AUCTION_SLICE_P;
+	u64 cost_e_q = ((u64)cost_e * len_ns + AUCTION_SLICE_P / 2)
+		       / AUCTION_SLICE_P;
 
-	*phi_p_out = (s64)w_slice_p - (s64)cost_p_ns;
-	*phi_e_out = (s64)w_slice_e - (s64)cost_e_ns;
+	*phi_p_out = (s64)weight - (s64)cost_p_q;
+	*phi_e_out = (s64)w_e    - (s64)cost_e_q;
 }
 
 /*
@@ -364,22 +383,49 @@ BPF_STRUCT_OPS(auction_select_cpu,
 {
 	struct auction_task_ctx *tctx;
 	bool is_idle = false;
-	s32 cpu;
-
-	cpu = scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, &is_idle);
+	s32 cpu = -1;
+	s32 c;
 
 	tctx = get_task_ctx(p, false);
 	if (tctx)
 		tctx->wake_prev_cpu = prev_cpu;
 
 	/*
-	 * Fast wake-path: if dfl found an idle CPU, run directly without
-	 * going through the auction.  The auction's purpose is to allocate
-	 * a *contested* resource — an idle core is uncontested by definition,
-	 * and forcing a queue trip would only add latency.  Matches the
-	 * Allocation rule from theory §2.4: φ-argmax binds only when
-	 * K_κ^t < |{eligible tasks}|.
+	 * P-bias scan (model §2.4 Allocation rule, refined):  prefer an idle
+	 * P-cluster CPU first.  For default-weight tasks φ_P ≥ φ_E almost
+	 * always (weight − cost > weight·η_E/η_P − cost), so the rule reduces
+	 * to "land on the strongest core that's free".  Avoids the
+	 * select_cpu_dfl bias toward prev_cpu which routinely strands single-
+	 * threaded passmark workers on E-cores.
+	 *
+	 * Fast path: cache-warm prev_cpu wins if it is an idle P-core.
 	 */
+	if (prev_cpu >= 0 && cpu_is_p_type((u32)prev_cpu) &&
+	    bpf_cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
+	    scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
+		cpu = prev_cpu;
+		is_idle = true;
+		goto have_cpu;
+	}
+
+	/* Scan for any idle P-core.  AUCTION_NCPU_MAX bounds the loop. */
+	bpf_for(c, 0, AUCTION_NCPU_MAX) {
+		if (!cpu_is_p_type((u32)c))
+			continue;
+		if (!bpf_cpumask_test_cpu(c, p->cpus_ptr))
+			continue;
+		if (scx_bpf_test_and_clear_cpu_idle(c)) {
+			cpu = c;
+			is_idle = true;
+			break;
+		}
+	}
+
+	/* No idle P: fall back to default selector (lets idle E be picked). */
+	if (cpu < 0)
+		cpu = scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, &is_idle);
+
+have_cpu:
 	if (cpu >= 0 && is_idle) {
 		if (tctx)
 			tctx->long_slice = 0;
@@ -398,7 +444,7 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	u64 len_ns, slice_ns, dsq_id;
 	s64 phi_p, phi_e, phi_chosen;
 	u32 m_chosen;
-	bool on_p;
+	bool on_p, is_wakeup;
 
 	if (!gdata || !tctx)
 		return;
@@ -409,6 +455,7 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	cost_e  = gdata->cost_e       ?: C_E_DEF;
 	weight  = p->scx.weight       ?: 1;
 	tctx->weight_cached = weight;
+	is_wakeup = (enq_flags & SCX_ENQ_WAKEUP) || !tctx->last_stop_ns;
 
 	if (enq_flags & SCX_ENQ_WAKEUP)
 		budget_replenish(tctx, bpf_ktime_get_ns());
@@ -418,11 +465,18 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 		    &phi_p, &phi_e);
 
 	/*
-	 * Cluster routing — κ* = argmax_κ φ_κ (theory §2.4 allocation rule).
-	 * Ties resolve toward P (no hysteresis: s4+ is a clean-room
-	 * implementation, behavioural softening is left to a later iteration).
+	 * Cluster routing:
+	 *   - WAKEUP / first enqueue: re-evaluate κ* = argmax_κ φ_κ.
+	 *   - Preempt re-enqueue (no WAKEUP): keep the cluster the task was
+	 *     last running on.  Re-routing mid-run thrashes caches without
+	 *     yielding new auction information — the task's φ hasn't moved
+	 *     enough between two adjacent quanta to justify migration.
 	 */
-	on_p          = (phi_p >= phi_e);
+	if (is_wakeup) {
+		on_p = (phi_p >= phi_e);
+	} else {
+		on_p = tctx->on_p_type != 0;
+	}
 	phi_chosen    = on_p ? phi_p : phi_e;
 	m_chosen      = contract_length(len_ns, on_p, max_cap, min_cap);
 	dsq_id        = on_p ? AUCTION_DSQ_P : AUCTION_DSQ_E;
@@ -441,24 +495,112 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	if (tctx->budget_max &&
 	    tctx->budget * 10 < tctx->budget_max) {
 		dsq_id = AUCTION_DSQ_STARVED;
-		/* STARVED tasks keep a P slice so the queue rotates quickly. */
 		slice_ns = AUCTION_SLICE_P;
 		tctx->long_slice = 0;
+		goto insert;
 	}
 
+	/*
+	 * Asymmetric P→E spill (extension §X.1 mirrored from s4).  When the
+	 * P queue is saturated and relatively more crowded than E in
+	 * normalised depth, route the would-be P task to E to keep all cores
+	 * busy on big-P / small-E and big-E / small-P silicon alike.
+	 * Cross-multiplied to avoid a 64-bit divide on the hot path:
+	 *   Q_P · K_E > Q_E · K_P  ⇒  P is the bottleneck, spill to E.
+	 *
+	 * Gated on short tasks (len_est_ns < SLICE_P) only.  Memory-bound
+	 * long-running tasks routed by φ to P would lose ~30 % bandwidth /
+	 * 2× latency on E (measured: PassMark MEM 3409→2403, MEM_LAT
+	 * 53→97 ns); the spill heuristic prioritises throughput at the
+	 * cost of locality, which is wrong for the memory-bound regime.
+	 */
+	if (on_p && len_ns < AUCTION_SLICE_P) {
+		u32 p_cc = gdata->p_core_count;
+		u32 e_cc = gdata->e_core_count;
+		u64 p_q  = scx_bpf_dsq_nr_queued(AUCTION_DSQ_P);
+		u64 e_q  = scx_bpf_dsq_nr_queued(AUCTION_DSQ_E);
+
+		if (p_cc && e_cc && p_q >= p_cc &&
+		    (e_q < e_cc || p_q * e_cc > e_q * p_cc)) {
+			dsq_id          = AUCTION_DSQ_E;
+			slice_ns        = AUCTION_SLICE_E;
+			tctx->on_p_type = 0;
+			tctx->long_slice = 1;
+			phi_chosen      = phi_e;
+			tctx->phi_enq   = phi_e;
+			tctx->m_enq     = contract_length(len_ns, false,
+							  max_cap, min_cap);
+			on_p            = false;
+		}
+	}
+
+	/*
+	 * Per-CPU sticky DSQ for long-running preempted tasks (cache-warm
+	 * hold).  When a CPU-bound task (len_est_ns ≥ SLICE_P) hits a slice
+	 * expiry preempt, the kernel calls enqueue again on the SAME CPU
+	 * the task just ran on; routing it into the cluster DSQ allows the
+	 * next dispatch to pull it onto any peer core, losing L1/L2.
+	 * Sticky path keeps it on the same physical CPU.
+	 *
+	 * Skipped for: WAKEUP (handled by cache-warm pin above), new tasks
+	 * (no last_stop_ns), short tasks (cluster mobility helps latency).
+	 */
+	if (!is_wakeup && tctx->last_stop_ns &&
+	    tctx->len_est_ns >= AUCTION_SLICE_P) {
+		s32 cur = (s32)bpf_get_smp_processor_id();
+		if (cur >= 0 && cur < AUCTION_NCPU_MAX &&
+		    bpf_cpumask_test_cpu(cur, p->cpus_ptr)) {
+			scx_bpf_dsq_insert_vtime(p,
+				AUCTION_DSQ_PERCPU_BASE + (u64)cur,
+				slice_ns, encode_phi(phi_chosen),
+				enq_flags);
+			return;
+		}
+	}
+
+	/*
+	 * Cache-warm pin on wake-up (extension §X.5 mirrored from s4).  If
+	 * the task is waking and its previously-used CPU is in the chosen
+	 * cluster and currently idle, dispatch directly to that CPU's local
+	 * DSQ — bypasses the auction queue but only when the resource is
+	 * uncontested (consistent with theory §2.4: φ-argmax binds only when
+	 * K_κ^t < |eligible tasks|).  Empirically saves a queue-trip + an
+	 * IPI when the prev_cpu is already hot.
+	 */
+	if (is_wakeup) {
+		s32 prev_cpu = tctx->wake_prev_cpu;
+		tctx->wake_prev_cpu = -1;
+		if (prev_cpu >= 0) {
+			u32 pkey = (u32)prev_cpu;
+			u8 *flag = bpf_map_lookup_elem(&cpu_is_p, &pkey);
+			bool prev_is_p = flag && *flag;
+			bool cluster_match = on_p ? prev_is_p : !prev_is_p;
+
+			if (cluster_match &&
+			    bpf_cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
+			    scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
+				scx_bpf_dsq_insert(p,
+					SCX_DSQ_LOCAL_ON | (u64)prev_cpu,
+					slice_ns, enq_flags);
+				if ((s32)bpf_get_smp_processor_id() != prev_cpu)
+					scx_bpf_kick_cpu(prev_cpu, SCX_KICK_IDLE);
+				return;
+			}
+		}
+	}
+
+insert:
 	scx_bpf_dsq_insert_vtime(p, dsq_id, slice_ns,
 				 encode_phi(phi_chosen), enq_flags);
 
 	/*
-	 * Wake an idle CPU so the newly queued task does not wait for a
-	 * peer's slice expiry — work-conservation.  No directional
-	 * preference: in s4+ the cluster decision is encoded in the DSQ
-	 * routing above; any idle CPU will pull from its own cluster first
-	 * and steal otherwise.
+	 * Work-conservation kick: wake any idle CPU in the task's allowed set
+	 * so a newly queued task does not wait for a peer's slice expiry.
 	 */
 	{
 		s32 idle_cpu = scx_bpf_pick_idle_cpu(p->cpus_ptr, 0);
-		if (idle_cpu >= 0)
+		if (idle_cpu >= 0 &&
+		    idle_cpu != (s32)bpf_get_smp_processor_id())
 			scx_bpf_kick_cpu(idle_cpu, SCX_KICK_IDLE);
 	}
 }
@@ -584,7 +726,7 @@ BPF_STRUCT_OPS(auction_dispatch, s32 cpu, struct task_struct *prev)
 {
 	struct auction_runtime *rt = get_rt();
 	bool is_p;
-	u64 self_dsq, other_dsq, w_bar_self, w_bar_other;
+	u64 self_dsq, other_dsq, w_bar_self;
 	int attempt;
 
 	if (!rt)
@@ -592,46 +734,60 @@ BPF_STRUCT_OPS(auction_dispatch, s32 cpu, struct task_struct *prev)
 
 	is_p = cpu_is_p_type((u32)cpu);
 
+	/*
+	 * Phase 0 — per-CPU sticky DSQ.  Long-running preempted tasks live
+	 * here for cache-warm continuation on the same physical core.
+	 * Checked first so a slice-expiry preempt has the cheapest possible
+	 * re-pickup path.
+	 */
+	if (cpu >= 0 && cpu < AUCTION_NCPU_MAX &&
+	    scx_bpf_dsq_move_to_local(AUCTION_DSQ_PERCPU_BASE + (u64)cpu, 0))
+		return;
+
 	if (is_p) {
 		self_dsq    = AUCTION_DSQ_P;
 		other_dsq   = AUCTION_DSQ_E;
 		w_bar_self  = rt->w_bar_p;
-		w_bar_other = rt->w_bar_e;
 	} else {
 		self_dsq    = AUCTION_DSQ_E;
 		other_dsq   = AUCTION_DSQ_P;
 		w_bar_self  = rt->w_bar_e;
-		w_bar_other = rt->w_bar_p;
 	}
 
 	/*
 	 * Phase 1 — auction on the local cluster.  Run up to N rounds: each
 	 * losing round (STARVED exile) consumes the current top, so the next
 	 * round operates on the previous runner-up.  Bounded by
-	 * DISPATCH_AUCTION_TRIES for the BPF verifier.
+	 * DISPATCH_AUCTION_TRIES for the BPF verifier.  Fast-path: when there
+	 * is at most one queued task the auction is degenerate (no runner-up)
+	 * — short-circuit via move_to_local which also handles CPU-affinity
+	 * skipping internally, saving an iter alloc + destroy round-trip.
 	 */
-	bpf_for(attempt, 0, DISPATCH_AUCTION_TRIES) {
-		if (!scx_bpf_dsq_nr_queued(self_dsq))
-			break;
-		if (auction_try_round(self_dsq, w_bar_self, cpu))
-			return;
+	{
+		u64 nr = scx_bpf_dsq_nr_queued(self_dsq);
+		if (nr == 1) {
+			if (scx_bpf_dsq_move_to_local(self_dsq, 0))
+				return;
+		} else if (nr >= 2) {
+			bpf_for(attempt, 0, DISPATCH_AUCTION_TRIES) {
+				if (!scx_bpf_dsq_nr_queued(self_dsq))
+					break;
+				if (auction_try_round(self_dsq, w_bar_self, cpu))
+					return;
+			}
+		}
 	}
 
 	/*
-	 * Phase 2 — cross-cluster steal (theory §2.4 work-conservation
-	 * remark: an unused quantum is lost forever).  The borrowing core
-	 * re-runs the auction on the foreign cluster's queue using its
-	 * own \bar W_κ for the payment formula — a conservative fallback
-	 * acknowledged in impl/s4+/architecture.md §6 (full re-evaluation
-	 * of φ on the borrowing core would require recomputing for every
-	 * task and is deferred).
+	 * Phase 2 — cross-cluster steal (theory §2.4 work-conservation:
+	 * an unused quantum is lost forever).  Use the plain FIFO drain on
+	 * the foreign DSQ — the auction was already evaluated when those
+	 * tasks were enqueued for THAT cluster, so re-running VCG with the
+	 * wrong \bar W_κ would introduce noise.  move_to_local skips tasks
+	 * incompatible with the calling CPU's affinity automatically.
 	 */
-	bpf_for(attempt, 0, DISPATCH_AUCTION_TRIES) {
-		if (!scx_bpf_dsq_nr_queued(other_dsq))
-			break;
-		if (auction_try_round(other_dsq, w_bar_other, cpu))
-			return;
-	}
+	if (scx_bpf_dsq_move_to_local(other_dsq, 0))
+		return;
 
 	/*
 	 * Phase 3 — STARVED queue.  Bypasses the VCG check entirely:
@@ -798,6 +954,16 @@ BPF_STRUCT_OPS_SLEEPABLE(auction_init)
 	ret = scx_bpf_create_dsq(AUCTION_DSQ_STARVED, -1);
 	if (ret)
 		return ret;
+
+	{
+		u32 i;
+		bpf_for(i, 0, AUCTION_NCPU_MAX) {
+			s32 r = scx_bpf_create_dsq(
+				AUCTION_DSQ_PERCPU_BASE + i, -1);
+			if (r)
+				return r;
+		}
+	}
 	return 0;
 }
 
