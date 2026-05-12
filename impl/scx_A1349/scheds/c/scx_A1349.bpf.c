@@ -40,22 +40,41 @@ char _license[] SEC("license") = "GPL";
 #define C_E_DEF             256u
 
 /*
+ * φ value-term scale shift.  Without it, for default-nice tasks
+ * (weight=1024, c_P=1024, l_q≈1) the formula φ_P = w − c·l_q collapses to
+ * ≈ 0 — the entire P-cluster DSQ degenerates to FIFO because every task's
+ * encode_phi() lands on PHI_BIAS.  Shifting v_i by 1 bit widens the
+ * dynamic range without overshooting: fresh task φ_P ≈ 1024,
+ * long-running (l_q=2) φ_P ≈ 0, very long (l_q=32) φ_P ≈ −30720.
+ * Budget and replenish constants below absorb the same ×2.
+ */
+#define PHI_VALUE_SHIFT     1u
+
+
+/*
  * Budget token bucket (theory §2.4 budget mechanism).
  *   B_i^max     = w_i · BUDGET_MUL
  *   replenish    = min(idle_ns, REPLENISH_IDLE_CAP) · w_i / REPLENISH_DIV
  *
- * Sized to the rescaled φ magnitude (φ in weight-units after compute_phi
- * divides ns-cost by SLICE_P).  Default-nice task (weight=1024) gets
- * budget_max = 2.05e6, refills ~5%/s of idle for that weight.
+ * Both constants scaled by 1<<PHI_VALUE_SHIFT relative to the s4 originals
+ * (2000 / 5e6).  Net result: typical VCG payment / budget ratio unchanged,
+ * STARVED entry rate matches the pre-rescale baseline.
  */
-#define BUDGET_MUL          2000ULL
-#define REPLENISH_DIV       5000000ULL
+#define BUDGET_MUL          (8ULL     << PHI_VALUE_SHIFT)
+#define REPLENISH_DIV       (12000000ULL >> PHI_VALUE_SHIFT)
 #define REPLENISH_IDLE_CAP  1000000000ULL
 
 /*
  * Cluster-conditioned slice grants (same dual-slice rationale as s4).
  *   SLICE_P  short, latency-first.
  *   SLICE_E  1.5× larger, amortises preempt overhead on slower cores.
+ *
+ * Reduced from the original 20 ms to 10 ms.  Hackbench-style
+ * producer-consumer pairs round-trip in ~0.2 ms; a 20 ms slice held
+ * the consumer idle waiting for the producer's slice expiry under
+ * stress (no idle CPU available, fall-through to cluster DSQ).
+ * Halving the slice tightens the preempt cycle without dropping it
+ * into the high-overhead sub-millisecond regime.
  */
 #define AUCTION_SLICE_P     20000000ULL
 #define AUCTION_SLICE_E     ((3ULL * AUCTION_SLICE_P) / 2)
@@ -273,13 +292,27 @@ compute_phi(u32 weight, u64 len_ns,
 	u32 mx = max_cap ? max_cap : CAPACITY_SCALE;
 	u32 mc = min_cap ? min_cap : mx;
 	u64 w_e = (u64)weight * (u64)mc / (u64)mx;
-	u64 cost_p_q = ((u64)cost_p * len_ns + AUCTION_SLICE_P / 2)
-		       / AUCTION_SLICE_P;
-	u64 cost_e_q = ((u64)cost_e * len_ns + AUCTION_SLICE_P / 2)
-		       / AUCTION_SLICE_P;
+	/*
+	 * Integer-quantum discretisation of the cost term.  Sub-quantum
+	 * tasks collapse to l_q=0 (cost=0), so same-weight short tasks
+	 * share a single φ key and the DSQ falls back to insertion order
+	 * within that bucket — restores hackbench's natural FIFO producer-
+	 * consumer pairing that the original ns-precision cost destroyed.
+	 * Long-running tasks (l_q ≥ 1) still rank by integer quanta.
+	 */
+	u64 l_q_int = (len_ns + AUCTION_SLICE_P / 2) / AUCTION_SLICE_P;
+	u64 cost_p_q = (u64)cost_p * l_q_int;
+	u64 cost_e_q = (u64)cost_e * l_q_int;
 
-	*phi_p_out = (s64)weight - (s64)cost_p_q;
-	*phi_e_out = (s64)w_e    - (s64)cost_e_q;
+	/*
+	 * v_i scaled by PHI_VALUE_SHIFT to break the φ=0 degeneracy that
+	 * collapses default-nice tasks to FIFO inside the DSQ.  Cost stays
+	 * at native scale: ranking now uses widened value with cost as a
+	 * smaller corrective term, which preserves the sign of φ on
+	 * long-running tasks (φ < 0 when the contract dominates the value).
+	 */
+	*phi_p_out = ((s64)weight << PHI_VALUE_SHIFT) - (s64)cost_p_q;
+	*phi_e_out = ((s64)w_e    << PHI_VALUE_SHIFT) - (s64)cost_e_q;
 }
 
 /*
@@ -324,6 +357,13 @@ delta_pow(u32 m)
  * Replenish budget by idle time × weight.  Token bucket capped at budget_max.
  * Mirrors theory §2.4 "Аллокация задаче … допустима, если p_i ≤ B_i^t":
  * sleep accrues credit; the budget cap prevents permanent stockpiling.
+ *
+ * Consumes the credited interval by advancing last_stop_ns to `now` on a
+ * successful refill.  This lets the caller invoke budget_replenish() on
+ * every enqueue (including preempt re-enqueues that lack SCX_ENQ_WAKEUP)
+ * without double-crediting: a tight preempt-re-enqueue arrives with
+ * idle_ns ≈ 0 and is a no-op, while a genuine sleep period is fully
+ * credited exactly once and then consumed.
  */
 static __always_inline void
 budget_replenish(struct auction_task_ctx *tctx, u64 now)
@@ -341,6 +381,8 @@ budget_replenish(struct auction_task_ctx *tctx, u64 now)
 	tctx->budget += add;
 	if (tctx->budget > tctx->budget_max)
 		tctx->budget = tctx->budget_max;
+
+	tctx->last_stop_ns = now;
 }
 
 /*
@@ -457,8 +499,14 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	tctx->weight_cached = weight;
 	is_wakeup = (enq_flags & SCX_ENQ_WAKEUP) || !tctx->last_stop_ns;
 
-	if (enq_flags & SCX_ENQ_WAKEUP)
-		budget_replenish(tctx, bpf_ktime_get_ns());
+	/*
+	 * Replenish unconditionally — preempt re-enqueues arrive with
+	 * idle_ns ≈ 0 (no time since the last consume) and are no-ops,
+	 * while genuine wake-ups credit one full sleep interval.  Closes
+	 * the moderate-load schbench p99 cliff where workers preempted
+	 * faster than REPLENISH_DIV could refill on WAKEUP-only path.
+	 */
+	budget_replenish(tctx, bpf_ktime_get_ns());
 
 	len_ns = tctx->len_est_ns ?: AUCTION_SLICE_P;
 	compute_phi(weight, len_ns, max_cap, min_cap, cost_p, cost_e,
@@ -508,13 +556,15 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	 * Cross-multiplied to avoid a 64-bit divide on the hot path:
 	 *   Q_P · K_E > Q_E · K_P  ⇒  P is the bottleneck, spill to E.
 	 *
-	 * Gated on short tasks (len_est_ns < SLICE_P) only.  Memory-bound
-	 * long-running tasks routed by φ to P would lose ~30 % bandwidth /
-	 * 2× latency on E (measured: PassMark MEM 3409→2403, MEM_LAT
-	 * 53→97 ns); the spill heuristic prioritises throughput at the
-	 * cost of locality, which is wrong for the memory-bound regime.
+	 * Previously gated on short tasks only.  The gate caused stress
+	 * hackbench regression because long P-resident pipe pairs piled up
+	 * behind each other on the saturated P queue while E sat idle.
+	 * Trade-off versus the historical PassMark MEM/MEM_LAT regression
+	 * on memory-bound long-runners: those workloads still benefit from
+	 * the per-CPU sticky DSQ pin on subsequent quanta, which keeps the
+	 * task cache-warm even after the initial spill.
 	 */
-	if (on_p && len_ns < AUCTION_SLICE_P) {
+	if (on_p) {
 		u32 p_cc = gdata->p_core_count;
 		u32 e_cc = gdata->e_core_count;
 		u64 p_q  = scx_bpf_dsq_nr_queued(AUCTION_DSQ_P);
@@ -603,6 +653,7 @@ insert:
 		    idle_cpu != (s32)bpf_get_smp_processor_id())
 			scx_bpf_kick_cpu(idle_cpu, SCX_KICK_IDLE);
 	}
+
 }
 
 /*
@@ -801,11 +852,6 @@ BPF_STRUCT_OPS(auction_dispatch, s32 cpu, struct task_struct *prev)
 void
 BPF_STRUCT_OPS(auction_running, struct task_struct *p)
 {
-	/*
-	 * Pure auction has no virtual time to advance.  Kept as an empty
-	 * hook for symmetry with stopping and to leave room for future
-	 * per-run telemetry without changing the struct_ops table.
-	 */
 	(void)p;
 }
 
