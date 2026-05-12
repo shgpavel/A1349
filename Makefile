@@ -7,6 +7,7 @@ SCX_DIR ?= ../scx
 SCX_CARGO ?= cargo
 SCX_LAVD_BIN ?= $(abspath $(SCX_DIR)/target/release/scx_lavd)
 BENCH_INTERVAL ?= 1
+BENCH_RUNS ?= 1
 BENCH_RESULTS_DIR ?= results
 BENCH_PLOTS_DIR ?= plots
 BENCH_LEVELS ?=
@@ -39,6 +40,7 @@ benchmarks: benchmarks-build
 benchmarks-run:
 	$(PYTHON) $(BENCHMARK_DIR)/run_suite.py \
 		--interval $(BENCH_INTERVAL) \
+		--runs $(BENCH_RUNS) \
 		$(if $(BENCH_LEVELS),--levels $(BENCH_LEVELS)) \
 		$(if $(BENCH_SCHEDS),--scheds $(BENCH_SCHEDS)) \
 		--lavd-bin $(SCX_LAVD_BIN) \
