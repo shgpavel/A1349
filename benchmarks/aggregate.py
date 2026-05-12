@@ -51,6 +51,8 @@ def t_ci(values):
     if n < 2:
         return mean, 0.0, mean, mean
     std = float(values.std(ddof=1))
+    if std == 0.0:
+        return mean, 0.0, mean, mean
     sem = std / np.sqrt(n)
     lo, hi = stats.t.interval(CI_LEVEL, df=n - 1, loc=mean, scale=sem)
     return mean, std, float(lo), float(hi)
