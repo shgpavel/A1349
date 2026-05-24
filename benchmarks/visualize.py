@@ -564,8 +564,8 @@ def plot_throughput(data, scheds, output_dir, metadata=None):
             colors.append(color_for(sched))
             ci = entry.get("oneshot_ci", {}).get(col)
             if ci and ci[0] is not None and ci[1] is not None:
-                err_lo.append(val - ci[0])
-                err_hi.append(ci[1] - val)
+                err_lo.append(max(0.0, val - ci[0]))
+                err_hi.append(max(0.0, ci[1] - val))
             else:
                 err_lo.append(0)
                 err_hi.append(0)

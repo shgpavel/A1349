@@ -1,6 +1,6 @@
 %!TeX program = xelatex
 
-\documentclass[aspectratio=169]{beamer}
+\documentclass[aspectratio=169,11pt]{beamer}
 \usepackage[english]{babel}
 \usepackage{fontspec}
 \usepackage{graphicx}
@@ -130,21 +130,23 @@
         bottom=2mm
 }
 
-\newtcolorbox{shadowbox3}{
+\newtcolorbox{shadowbox3}[1][]{
         enhanced,
         colback=NearWhite,
         colframe=MainRed,
         coltext=NearBlack,
         arc=6pt,
         boxrule=0.6pt,
+        width=0.95\linewidth,
         left=4mm, right=4mm, top=2mm, bottom=2mm,
-        halign=center
+        halign=center,
+        #1
 }
 
-\setmainfont{Iosevka NFM}
+\setmainfont{Iosevka NFP}
 \setmonofont{Iosevka NFM}
-\setsansfont{Iosevka NFM}
-\setromanfont{Iosevka NFM Italic}
+\setsansfont{Iosevka NFP}
+\setromanfont{Iosevka NFP Italic}
 \setmathfont{Latin Modern Math}
 
 \title{Математическое моделирование и
@@ -154,13 +156,14 @@
 \begin{document}
 
 \begin{frame}[plain]
+        \vspace*{0.3em}
         \begin{center}
-                \begin{shadowbox3}
+                \begin{shadowbox3}[colframe=GrayThr]
                         {\scriptsize
                                 Санкт-Петербургский государственный
                                 университет \\ [0.1em]
-                                Факультет прикладной математики~-- процессов
-                                управления \\ [-0.4em]
+                                \textit{Факультет прикладной математики~-- процессов
+                                управления} \\ [-0.4em]
                                 ООП СВ.5005.2022 Прикладная
                                 математика, фундаментальная информатика и
                                 программирование
@@ -168,25 +171,25 @@
                 \end{shadowbox3}
         \end{center}
 
-        \vspace{0.3em}
-        {\color{MainRed}\hrule height 1pt}
-        \vspace{0.3em}
+        \vspace{0.1em}
+        \noindent\rlap{\hspace*{-1cm}\textcolor{MainRed}{\rule{\paperwidth}{1pt}}}\par
+        \vspace{0.4em}
 
         \begin{center}
-                {\small\color{MainRed}\textbf{Шаго Павел Евгеньевич}}
+                {\small\color{DarkRed}Шаго Павел Евгеньевич}
 
-                \vspace{0.2em}
-                \begin{shadowbox3}
-                        {\bfseries
+                \vspace{0.4em}
+                \begin{shadowbox3}[colback=MainRed!8]
+                        {\color{MainRed}\itshape
                                 Математическое моделирование и
                                 реализация планировщика
                         процессов для гетерогенных процессорных архитектур}
                 \end{shadowbox3}
 
-                \vspace{0.1em}
+                \vspace{0.4em}
                 {\small\itshape Бакалаврская работа}
         \end{center}
-        \vspace{0.5em}
+        \vspace{1.1em}
 
         \begin{minipage}{\textwidth}
                 \begin{minipage}[t]{0.45\linewidth}
@@ -206,8 +209,9 @@
                 \end{minipage}
         \end{minipage}
 
-        \vfill
-        {\color{MainRed}\hrule height 1pt}
+        \vspace{0.2em}
+        \noindent\rlap{\hspace*{-1cm}\textcolor{MainRed}{\rule{\paperwidth}{1pt}}}\par
+        \vspace{0.4em}
 
         \begin{center}
                 {\scriptsize
@@ -218,39 +222,126 @@
 
 
 \begin{frame}{Постановка задачи}
+        \footnotesize
+        \textbf{Цель работы} \\
+        разработка и экспериментальная оценка планировщика,
+        обеспечивающего более высокую эффективность вычислений
+        на гетерогенном оборудовании по сравнению со штатным
+        планировщиком ядра Linux
+
+        \vspace{1.2em}
+        \textbf{Предмет исследования} \\
+        методы планирования, учитывающие различие
+        вычислительной мощности ядер
+
+        \vspace{1.4em}
+        \centering\textbf{Гетерогенные процессоры в современных устройствах}\par
+        \vspace{0.5em}
+        \centering
+        \scriptsize
+        \begin{tabular}{@{}llcc@{}}
+                \toprule
+                Сегмент & Примеры & Массово & Сегодня \\
+                \midrule
+                Смартфоны    & Apple A, Snapdragon, Dimensity, Exynos, Tensor & 2013 & все актуальные \\
+                Ноутбуки     & Apple M, Intel Core Ultra, Ryzen AI, Snapdragon X & 2020 & все актуальные \\
+                Настольные ПК & Intel Core 12+, Intel Core Ultra                & 2021 & частично \\
+                Серверы       & NVIDIA GB10                                     & {\textemdash} & экспериментально \\
+                \bottomrule
+        \end{tabular}
+
+        \vspace{0.8em}
+        \raggedright
+        \scriptsize\textit{Тренд:} гетерогенные
+        P/E\nobreakdash-архитектуры, возникшие в мобильных SoC,
+        стали нормой для процессоров ПК и ноутбуков. Серверные
+        CPU пока остаются однородными
+\end{frame}
+
+
+\begin{frame}{Ключевая идея и задачи}
+        \footnotesize
+        \begin{shadowbox4}
+                \footnotesize Временные кванты P/E\nobreakdash-ядер
+                процессора представляют собой \textbf{недолговечный
+                ресурс} (неиспользованный квант теряется
+                безвозвратно). Их распределение моделируется
+                динамическим аукционом VCG с
+                задачами\nobreakdash-агентами типа
+                $\theta_i = (v_i, l_i)$, максимизирующим
+                социальное благосостояние
+        \end{shadowbox4}
+
+        \vspace{0.5em}
+        \textbf{Задачи работы}
+        \begin{enumerate}\setlength{\itemsep}{0.3em}
+                \item Проанализировать и определить наиболее
+                        перспективный подход к реализации планировщика
+                \item Построить математическую модель, учитывающую
+                        различную вычислительную мощность ядер процессора
+                \item Реализовать разработанный алгоритм и
+                        собрать воспроизводимый набор бенчмарков
+                \item Провести эксперимент на гетерогенном оборудовании
+                        и оценить результаты в сравнении с базовым
+                        планировщиком Linux EEVDF
+        \end{enumerate}
+\end{frame}
+
+
+\begin{frame}{Подходы к реализации планировщика}
+        \footnotesize
+        \textbf{Возможные решения}
+        \begin{enumerate}\setlength{\itemsep}{0.1em}
+                \item Прямая модификация планировщика в ядре Linux
+                \item Загружаемый модуль ядра Linux
+                \item Пользовательский агент ghOSt
+                \item eBPF\nobreakdash-программа поверх sched\_ext
+        \end{enumerate}
+
+        \vspace{2em}
+        \centering
+        \scriptsize
+        \begin{tabular}{@{}lcccc@{}}
+                \toprule
+                Критерий & В ядре & Модуль & ghOSt & sched\_ext \\
+                \midrule
+                Без пересборки ядра                & $-$ & $+$ & $\pm$ & $+$ \\
+                Устойчивость к ошибкам политики    & $-$ & $-$ & $+$   & $+$ \\
+                Низкие накладные расходы           & $+$ & $+$ & $-$   & $\pm$ \\
+                Поддерживаемый интерфейс замены    & $-$ & $-$ & $\pm$ & $+$ \\
+                Переносимость между версиями ядра  & $-$ & $-$ & $\pm$ & $+$ \\
+                \bottomrule
+        \end{tabular}
+\end{frame}
+
+
+\begin{frame}{sched\_ext}
         \begin{columns}[T]
-                \column{0.5\textwidth}
-                \begin{itemize}\setlength{\itemsep}{0.3em}
-                        \item Современные процессоры все чаще гетерогенны.
-                                Объединяют производительные P\nobreakdash-ядра +
-                                энергоэффективные E\nobreakdash-ядра
+                \column{0.74\textwidth}
+                \centering
+                \includegraphics[width=\linewidth,height=0.85\textheight,keepaspectratio]{res/sched_ext.pdf}\\[-0.8em]
+                {\tiny \textbf{Рис.~1.} Механизм работы sched\_ext}
 
-                        \item Linux EEVDF учитывает типы ядер ограниченно,
-                                не балансирует производительность и
-                                энергопотребление так, как задумано
-                                архитектурой CPU
-                \end{itemize}
+                \column{0.26\textwidth}
+                \vspace{0.7em}
+                \textbf{\footnotesize DSQ} {\scriptsize(dispatch queue)}
+                {\scriptsize
+                        \begin{itemize}\setlength{\itemsep}{0pt}
+                                \item \texttt{SCX\_DSQ\_LOCAL}
+                                \item \texttt{SCX\_DSQ\_GLOBAL}
+                                \item пользовательские DSQ
+                \end{itemize}}
 
-                \column{0.5\textwidth}
-                \textbf{Цели работы}
-                \begin{enumerate}\setlength{\itemsep}{0.3em}
-                        \item Формализовать распределение слотов
-                                P/E\nobreakdash-ядер как динамический
-                                аукцион Викри (VCG)
-
-                        \item Реализовать механизм используя \texttt{sched\_ext}
-                                и оценить на тестах производительности
-                \end{enumerate}
+                \vspace{0.2em}
+                \textbf{\footnotesize Цикл планирования}
+                {\scriptsize
+                        \begin{itemize}\setlength{\itemsep}{0pt}
+                                \item \texttt{select\_cpu}
+                                \item \texttt{enqueue}
+                                \item \texttt{dispatch}
+                                \item \texttt{running} / \texttt{stopping}
+                \end{itemize}}
         \end{columns}
-
-        \vspace{0.3em}
-        \begin{shadowbox2}
-                \small Каждое ядро рассматривается как
-                \textbf{истощаемое благо}, неиспользованный квант
-                времени теряется безвозвратно. Задача\nobreakdash-агент
-                характеризуется типом $\theta_i = (v_i, l_i)$, а
-                механизм максимизирует социальное благосостояние.
-        \end{shadowbox2}
 \end{frame}
 
 
@@ -272,26 +363,26 @@
                 \textbf{Задачи как агенты}
                 \begin{itemize}
                         \item Тип $\theta_i = (v_i, l_i)$ (оценка и длина)
-                        \item Полезность $u_i = v_i - p_i$ при полном
-                                выполнении
-                        \item Бюджет $B_i$ по классу обслуживания:
+                        \item Полезность как маргинальный вклад
+                                $U_i = W(s^t) - W_{-i}(s^t) \geq 0$
+                        \item Бюджет $B_i > 0$ по классу обслуживания:
                 \end{itemize}
                 \vspace{0.2em}
                 {\footnotesize
                         \begin{tabular}{@{}ll@{}}
-                                Реального времени & $B_{RT} \gg 1$ \\
+                                Реального времени & $B_{RT}$ \\
                                 Интерактивный     & $B_{int}$ \\
                                 Пакетный          & $B_{batch}$ \\
-                                Фоновый           & $B_{bg} \approx 0$
+                                Фоновый           & $B_{bg}$
                 \end{tabular}}
         \end{columns}
 
         \vspace{0.4em}
         \begin{shadowbox}
                 \footnotesize На E-ядре задача длиной $l_i$ исполняется за
-                $\lceil l_i \cdot \sigma \rceil$ квантов.
+                $m_E(l_i) = \lceil l_i \cdot \sigma \rceil$ квантов.
                 Ценность $v_i$ начисляется только при полном выполнении
-                (условие полного исполнения по Sano, 2023).
+                контракта (допущение атомарности контракта).
         \end{shadowbox}
 \end{frame}
 
@@ -300,42 +391,42 @@
         \begin{columns}[T]
                 \column{0.5\textwidth}
                 \textbf{Состояние} $s^t =
-                (\mathbf{x}^t,\,\mathbf{b}^t,\,\boldsymbol{\omega}^t)$
+                (\mathbf{x}^t,\,\mathbf{b}^t,\,\Theta^t,\,\mathcal{N}^t)$
                 \begin{itemize}
-                        \item $\mathbf{x}^t$~-- оставшиеся кванты на
-                                каждом ядре
-                        \item $\mathbf{b}^t$~-- остатки бюджетов активных задач
-                        \item $\boldsymbol{\omega}^t$~-- внешние факторы
-                                (температура, нагрузка)
+                        \item $\mathbf{x}^t$~-- остаточные длительности
+                                контрактов на ядрах
+                        \item $\mathbf{b}^t$~-- остаточные бюджеты
+                                активных задач
+                        \item $\Theta^t$~-- типы текущих задач
+                        \item $\mathcal{N}^t$~-- множество активных задач
                 \end{itemize}
 
                 \vspace{0.3em}
-                \textbf{Действие}  $a^t = (a_{i,P}^t, a_{i,E}^t)_i$
-                при ограничениях:
+                \textbf{Действие}  $a_i^t = (a_{i,P}^t, a_{i,E}^t)
+                \in \{0,1\}^2$
                 $$a_{i,P}^t + a_{i,E}^t \leq 1, \quad \forall i$$
                 $$\sum_i a_{i,P}^t \leq K_P^t, \quad
                 \sum_i a_{i,E}^t \leq K_E^t$$
 
                 \column{0.5\textwidth}
-                \textbf{Вознаграждение}
+                \textbf{Функция перехода}
+                $s^{t+1} = G(s^t, a^t, \mathcal{N}^{t+1})$
+                $$x_k^{t+1} = \begin{cases}
+                        m_\kappa(l_i) - 1, & \text{ядро $k$ занято $i$}\\
+                        \max(x_k^t - 1,\,0), & \text{иначе}
+                \end{cases}$$
+                $$b_i^{t+1} = b_i^t - p_i^t$$
+                {\footnotesize $m_P(l) = l$,\;
+                $m_E(l) = \lceil l\sigma \rceil$~-- длина контракта}
 
                 \vspace{0.2em}
-                Задача $i$ (покупатель):
-                $$r_i(s,a) = v_i \cdot \mathbb{1}[\text{$i$ завершилась в $t$}]$$
-
-                Планировщик (продавец):
-                $$r_0 = \mu_P\!\!\sum_{k\in\mathcal{P}}\!\mathbb{1}[x_k \geq 1]
-                + \mu_E\!\!\sum_{k\in\mathcal{E}}\!\mathbb{1}[x_k \geq 1]$$
-
-                \vspace{0.1em}
-                {\footnotesize $\mu_\kappa$~-- вознаграждение за активный
-                квант ядра типа~$\kappa$;\, $\mu_P > \mu_E$
-                (P\nobreakdash-ядро производительнее)}
-
-                \vspace{0.2em}
-                \textbf{Социальное благосостояние}
-                $$W(\pi) = \lim_{T\to\infty} \frac{1}{T}
-                \mathbb{E}\!\left[\sum_{t=1}^T R(s^t,a^t)\right]$$
+                \textbf{Социальное благосостояние}~-- уравнение
+                Беллмана, $\delta \in (0,1)$~-- дисконт:
+                $$W(s^t) = \max_{a^t} \Bigl[\,
+                {\textstyle\sum_i} \phi^{a}_i
+                + \delta\, \mathbb{E}[W(s^{t+1})]\Bigr]$$
+                {\footnotesize $\phi^{a}_i = a_{i,P}\phi_P(\theta_i)
+                + a_{i,E}\phi_E(\theta_i)$ (см. след. слайд)}
         \end{columns}
 \end{frame}
 
@@ -372,62 +463,23 @@
                         \textbf{Свойства механизма}
                         \centering
                         \begin{itemize}
-                                \item Стимульная совместимость
-                                        (в~пределах класса, см.~Extra)
                                 \item Индивидуальная рациональность
                                         $u_i \geq 0$
                                 \item Бюджетное ограничение
                                         $p_i \leq B_i^t$
+                                \item Операционный антистимул
+                                        к завышению $v_i$
+                                        (платёж $\to$ бюджет)
                         \end{itemize}
                 \end{shadowbox}
         \end{columns}
 \end{frame}
 
 
-\begin{frame}{sched\_ext}
-        \vspace{-0.6em}
-        \begin{shadowbox4}
-                \footnotesize \textbf{sched\_ext} (scheduler extensions)~---
-                инфраструктура ядра Linux, позволяющая реализовывать
-                политику планирования как eBPF-программу,
-                подключаемую к интерфейсу расширяемых планировщиков без пересборки ядра
-        \end{shadowbox4}
-        \vspace{-0.6em}
-
-        \begin{columns}[T]
-                \column{0.74\textwidth}
-                \centering
-                \includegraphics[width=\linewidth,height=0.67\textheight,keepaspectratio]{res/sched_ext.pdf}\\[-0.8em]
-                {\tiny \textbf{Рис.~1.} Механизм работы sched\_ext}
-
-                \column{0.26\textwidth}
-                \vspace{0.7em}
-                \textbf{\footnotesize DSQ} {\scriptsize(dispatch queue)}
-                {\scriptsize
-                        \begin{itemize}\setlength{\itemsep}{0pt}
-                                \item \texttt{SCX\_DSQ\_LOCAL}
-                                \item \texttt{SCX\_DSQ\_GLOBAL}
-                                \item пользовательские DSQ
-                \end{itemize}}
-
-                \vspace{0.2em}
-                \textbf{\footnotesize Цикл планирования}
-                {\scriptsize
-                        \begin{itemize}\setlength{\itemsep}{0pt}
-                                \item \texttt{select\_cpu}
-                                \item \texttt{enqueue}
-                                \item \texttt{dispatch}
-                                \item \texttt{running} / \texttt{stopping}
-                \end{itemize}}
-        \end{columns}
-\end{frame}
-
-
 \begin{frame}{Маршрутизация задач}
-        \textbf{Сигнал маршрутизации}~-- отношение бюджета
-        $\rho_i = B_i / B_i^{\max}$
-        {\footnotesize (высокое $\rho$ $\Leftrightarrow$ много накопленного
-        бюджета $\Leftrightarrow$ недавний простой)}
+        \textbf{Решение аукциона}~-- задача направляется на кластер
+        $\kappa^* = \arg\max_\kappa \phi_\kappa(\theta_i)$
+        {\footnotesize (пересматривается при пробуждении задачи)}
 
         \vspace{0.3em}
         \begin{columns}[T]
@@ -437,14 +489,13 @@
 
                         \vspace{0.3em}
                         \footnotesize
-                        $\rho_i \geq \rho^*\ (50\%)$
+                        $\phi_P \geq \phi_E$
 
                         \vspace{0.2em}
-                        Задача короткими всплесками
-                        потребляет CPU и большую
-                        часть времени ждёт IO.
-                        Выигрывает от пиковой
-                        частоты P-ядра
+                        Эффективная ценность выше
+                        на P-ядре. Задача выигрывает
+                        от пиковой частоты
+                        производительного ядра
                 \end{shadowbox2}
 
                 \column{0.33\textwidth}
@@ -453,13 +504,14 @@
 
                         \vspace{0.3em}
                         \footnotesize
-                        $\rho_i < \rho^*$
+                        $\phi_E > \phi_P$ либо
+                        асимметричное перенаправление
+                        коротких задач из
+                        перегруженного P-кластера
 
                         \vspace{0.2em}
-                        Задача устойчиво расходует
-                        бюджет, близка к CPU-bound
-
-                        переносима на E-ядро
+                        {\scriptsize $Q_P \geq K_P,\ \
+                        Q_P K_E > Q_E K_P$}
                 \end{shadowbox2}
 
                 \column{0.33\textwidth}
@@ -468,44 +520,42 @@
 
                         \vspace{0.3em}
                         \footnotesize
-                        $B_i < B_i^{\max} / 10$
+                        $B_i^t < B_i^{\max} / 10$
 
                         \vspace{0.2em}
-                        Бюджет почти исчерпан
-                        штраф к виртуальному
-                        дедлайну
-                        $v_d \mathrel{+}=
-                        \max(0,\,-\phi_\kappa)\,/\,D$
-
-                        \vspace{0.1em}
-                        {\scriptsize демоция,
-                        не блокирует остальных}
+                        Бюджет почти исчерпан.
+                        Низший приоритет
+                        диспетчеризации, обслуживается
+                        обоими кластерами после
+                        пополнения
                 \end{shadowbox2}
         \end{columns}
 
         \vspace{0.3em}
         \begin{shadowbox}
-                \footnotesize Прирост бюджета за время простоя
-                $B_i \mathrel{+}= \Delta t_{\text{idle}} \cdot v_i
-                / D_{\text{rep}}$ играет роль, аналогичную пороговому
-                правилу Майерсона в одномерных аукционах
+                \footnotesize \textbf{Бюджет~-- корзина токенов.}
+                $B_i^{\max} = w_i \cdot \texttt{BUDGET\_MUL}$; пополнение
+                за время простоя
+                $\Delta B_i = \min(\Delta t_{\text{idle}},\, T_{\max})
+                \cdot w_i / D_{\text{rep}}$ обеспечивает устойчивое
+                обслуживание долгоживущих задач
         \end{shadowbox}
 \end{frame}
 
 
 \begin{frame}{Среда тестирования}
         \begin{columns}[T]
-                \column{0.24\textwidth}
+                \column{0.26\textwidth}
                 \begin{shadowbox}
                         \small\textbf{Система}
 
                         \vspace{0.25em}
                         \footnotesize
-                        Ядро Linux 7.0
+                        Ядро Linux 7.0,\\ Arch Linux
 
                         \vspace{0.25em}
                         CPU: Intel Core\\ Ultra 7 265K\\
-                        8P + 12E
+                        8P + 12E, без HT
                 \end{shadowbox}
 
                 \begin{shadowbox}
@@ -513,119 +563,93 @@
 
                         \vspace{0.2em}
                         \footnotesize
-                        Linux EEVDF\\
-                        \textit{vs}\\
+                        Linux EEVDF \textit{(эталон)}\\
                         scx\_EEVDF\\
-                        \textit{vs}\\
                         scx\_LAVD\\
-                        \textit{vs}\\
-                        scx\_auction (VCG)
+                        scx\_A1349 (VCG)
                 \end{shadowbox}
 
-                \column{0.52\textwidth}
+                \column{0.47\textwidth}
                 \begin{shadowbox}
                         \small\textbf{Бенчмарки}
 
-                        \vspace{0.15cm}
+                        \vspace{0.12cm}
                         \footnotesize
-                \begin{itemize}\setlength{\itemsep}{0.15cm}\setlength{\parskip}{0pt}
-                                \item \textbf{hackbench}~-- 10 групп по 40
-                                        задач, обмениваются короткими
-                                        сообщениями через сокеты.
-                                        Генерирует большое количество
-                                        переключений контекста (стресс тест
-                                        для планировщиков)
+                \begin{itemize}\setlength{\itemsep}{0.12cm}\setlength{\parskip}{0pt}
+                                \item \textbf{hackbench}~-- группы процессов,
+                                        обмен короткими сообщениями.
+                                        Массовое порождение короткоживущих
+                                        задач, стресс пробуждений и миграций
 
-                                \item \textbf{sysbench}~-- нагрузка на CPU,
-                                        память и дисковый ввод-вывод
-                                        с параметрами по умолчанию.
-                                        Имитирует смешанную OLTP-нагрузку
-                                        баз данных
+                                \item \textbf{sysbench}~--
+                                        \texttt{oltp\_read\_only}, транзакции
+                                        чтения к PostgreSQL. Потоки
+                                        блокируются на ожидании ответа БД
 
-                                \item \textbf{sched\_latency}~-- собственный
-                                        тест, работает параллельно с нагрузкой.
-                                        Регистрирует, сколько задача ждёт
-                                        между моментом готовности и
-                                        началом исполнения
+                                \item \textbf{schbench}~-- задержки
+                                        планирования, веб-нагрузка. Запрос~--
+                                        две фазы сна и фаза матричных
+                                        вычислений
                         \end{itemize}
                 \end{shadowbox}
 
-                \column{0.24\textwidth}
+                \column{0.26\textwidth}
                 \begin{shadowbox}
                         \small\textbf{Метрики}
 
-                        \vspace{0.15cm}
+                        \vspace{0.12cm}
                         \footnotesize
-                        \textbf{hackbench}\\
-                        Время ($s$), $\downarrow$
+                        hackbench: время (с)\,$\downarrow$
 
-                        \vspace{0.15cm}
-                        \textbf{sysbench}\\
-                        events$/s$, $\uparrow$
+                        \vspace{0.12cm}
+                        sysbench: TPS\,$\uparrow$
 
-                        \vspace{0.15cm}
-                        \textbf{sched\_latency}\\
-                        p99 ($\mu s$) по типам
+                        \vspace{0.12cm}
+                        schbench: RPS\,$\uparrow$,\\
+                        p99 / p99.9 (мкс)\,$\downarrow$
 
-                        \vspace{0.15cm}
-                        \textbf{RAPL}\\
-                        package ($W$)
+                        \vspace{0.12cm}
+                        RAPL package:\\ энергия (Дж)\,$\downarrow$
                 \end{shadowbox}
 
+                \begin{shadowbox2}
+                        \footnotesize 3 уровня нагрузки,\\
+                        $N = 6$, 95\,\% ДИ
+                \end{shadowbox2}
         \end{columns}
 \end{frame}
 
 
 \begin{frame}{Результаты. Hackbench}
         \begin{center}
-                \includegraphics[width=0.86\linewidth]{res/throughput_hackbench.pdf}
+                \includegraphics[width=0.82\linewidth,height=0.8\textheight,keepaspectratio]{res/bar_hackbench_time_sec.pdf}
         \end{center}
 \end{frame}
 
 
 \begin{frame}{Результаты. Sysbench}
         \begin{center}
-                \includegraphics[width=0.86\linewidth]{res/throughput_sysbench.pdf}
+                \includegraphics[width=0.82\linewidth,height=0.8\textheight,keepaspectratio]{res/bar_sysbench_tps.pdf}
         \end{center}
 \end{frame}
 
 
-\begin{frame}{Результаты. Итоговая таблица}
-        \vspace{0.3em}
+\begin{frame}{Результаты. Schbench}
         \begin{center}
-                {\small
-                        \begin{tabular}{@{}lrrrr@{}}
-                                \toprule
-                                \textbf{Метрика} & \textbf{Linux
-                                EEVDF} & \textbf{scx\_EEVDF} &
-                                \textbf{scx\_LAVD} & \textbf{scx\_auction} \\
-                                \midrule
-                                Hackbench (s)~$\downarrow$         &
-                                9.27 & 9.13 & 9.68 & \textbf{8.43} \\
-                                Sysbench (ev/s)~$\uparrow$         &
-                                121\,126 & \textbf{121\,816} &
-                                118\,835 & 116\,642 \\
-                                Sched delay avg ($\mu$s)~$\downarrow$
-                                & 2172 & 4620 & \textbf{361} & 3629 \\
-                                Sched delay p99 ($\mu$s)~$\downarrow$
-                                & 9605 & 15\,246 & \textbf{3014} & 38\,025 \\
-                                Preemption avg ($\mu$s)~$\downarrow$
-                                & 8878 & \textbf{18} & 9709 & 1055 \\
-                                Context sw (K/s)~$\downarrow$      &
-                                187 & \textbf{46} & 191 & 62 \\
-                                Sleep dur. avg (ms)~$\downarrow$   &
-                                130 & 149 & 113 & \textbf{26} \\
-                                Power (W)~$\downarrow$             &
-                                175.7 & 187.8 & \textbf{167.4} & 186.5 \\
-                                \bottomrule
-                        \end{tabular}
-                }
+                \includegraphics[width=0.82\linewidth,height=0.8\textheight,keepaspectratio]{res/bar_schbench_avg_rps.pdf}
+        \end{center}
+\end{frame}
+
+
+\begin{frame}{Результаты. Энергопотребление}
+        \begin{center}
+                \includegraphics[width=0.82\linewidth,height=0.8\textheight,keepaspectratio]{res/bar_total_energy_joules.pdf}
         \end{center}
 \end{frame}
 
 
 \begin{frame}{Выводы}
-        \begin{itemize}\setlength{\itemsep}{0.4em}
+        \begin{itemize}\setlength{\itemsep}{0.35em}
                 \item Распределение слотов P/E\nobreakdash-ядер
                         формализовано как динамический аукцион VCG:
                         состояние, действие, эффективная ценность
@@ -634,17 +658,21 @@
                         пределах класса, индивидуальная рациональность
                         и бюджетное ограничение
                 \item Механизм реализован как BPF\nobreakdash-планировщик
-                        \texttt{scx\_auction} поверх \texttt{sched\_ext}
-                        (DSQ\_P / DSQ\_E / DSQ\_Starved, маршрутизация
-                        по $\rho_i$, прирост бюджета за idle как аналог
-                        порогового правила Майерсона)
-                \item На Intel Core Ultra 7 265K (8P+12E) получено
-                        лучшее время hackbench (8.43\,s, $-9\%$ к
-                        Linux~EEVDF) и наименьшая средняя длительность
-                        сна (26\,ms). Sysbench и энергопотребление
-                        сопоставимы, p99 sched\nobreakdash-delay
-                        проигрывает scx\_LAVD~-- очередное направление
-                        работы
+                        \texttt{scx\_A1349} поверх \texttt{sched\_ext}:
+                        три кластерные DSQ, маршрутизация
+                        $\kappa^* = \arg\max_\kappa \phi_\kappa$,
+                        бюджет~-- корзина токенов
+                \item На Intel Core Ultra 7 265K (8P+12E)
+                        \texttt{scx\_A1349} быстрее штатного EEVDF на
+                        hackbench при всех уровнях нагрузки
+                        ($+4{,}5$\,/\,$+8{,}5$\,/\,$+1{,}4\,\%$) и лидирует
+                        по RPS schbench при умеренной и стрессовой
+                        нагрузке ($+51$\,/\,$+56\,\%$)
+                \item При стрессе хвостовая задержка запроса p99.9
+                        составляет $24{,}5$\,мс против
+                        $\approx 1{,}7$\,с у штатного EEVDF. На sysbench
+                        все sched\_ext-планировщики уступают штатному
+                        EEVDF из-за накладных расходов фреймворка
         \end{itemize}
 \end{frame}
 
@@ -661,127 +689,7 @@
 }
 
 
-\begin{frame}{Список литературы}
-        \begin{thebibliography}{20}
-                \scriptsize
-
-                \bibitem{leon}
-                Leon~G., Etesami~O.
-                Mechanism Design for Scheduling with Heterogeneous Workers.
-                NeurIPS, 2022
-
-                \bibitem{sano}
-                Sano~T.
-                Dynamic Mechanism Design for Multi-Period Contracting.
-                Working paper, 2023
-
-                \bibitem{myerson}
-                Myerson~R.~B.
-                Optimal Auction Design.
-                Mathematics of Operations Research, 6(1), 1981, pp.~58--73
-
-                \bibitem{stoica}
-                Stoica~I., Abdel-Wahab~H.
-                Earliest Eligible Virtual Deadline First: A Flexible and
-                Accurate Mechanism for Proportional Share Resource Allocation.
-                Old Dominion University, 1996
-
-                \bibitem{ghost}
-                Humphries~J.\,T., Natu~N., Chaugule~A. et~al.
-                ghOSt: Fast \& Flexible User-Space Delegation of
-                Linux Scheduling.
-                ACM SOSP, 2021
-
-                \bibitem{pie}
-                Van~Craeynest~K., Jaleel~A., Eeckhout~L. et~al.
-                Scheduling Heterogeneous Multi-Cores through
-                Performance Impact Estimation (PIE).
-                ISCA, 2012, pp.~213--224
-
-                \bibitem{galin}
-                Galin~M., Hedblom~A.
-                Linux Kernel Scheduler Evaluation for Performance-Critical
-                Telecom Workloads.
-                Linköping University, 2025
-
-                \bibitem{sched_ext}
-                \href{https://lwn.net/Articles/922405}
-                {The extensible scheduler class (LWN)}
-
-                \bibitem{eevdf}
-                \href{https://lwn.net/Articles/925371}
-                {An EEVDF CPU scheduler for Linux (LWN)}
-
-        \end{thebibliography}
-\end{frame}
-
-
 \appendix
-
-\begin{frame}{Extra}
-        \textbf{Стимульная совместимость (Sano, Теорема~1)}
-
-        \vspace{0.2cm}
-        Механизм стимульно совместим тогда и только тогда, когда
-        для каждой задачи $i$:
-
-        \begin{enumerate}
-                \item $\alpha_i(v_i, l_i)$ не убывает по $v_i$
-                        при фиксированном $l_i$
-                \item $\int_0^{v_i} \alpha_i(\nu, l_i)\,d\nu$ не возрастает
-                        по $l_i$ при фиксированном $v_i$
-                \item Существует $\underline{\Pi}_i$, не зависящее от $l_i$:
-                        $$\Pi_i(v_i, l_i) = \underline{\Pi}_i +
-                        \int_0^{v_i} \alpha_i(\nu, l_i)\,d\nu$$
-        \end{enumerate}
-
-        \vspace{0.1cm}
-        \begin{shadowbox}
-                \footnotesize Задачам невыгодно завышать оценку $v_i$
-                или занижать длину $l_i$~--- правдивая ставка
-                является доминирующей стратегией
-        \end{shadowbox}
-\end{frame}
-\addtocounter{framenumber}{-1}
-
-\begin{frame}{Extra}
-        \textbf{Онлайн-обучение: IHMDP-VCG (Leon \& Etesami)}
-
-        \vspace{0.15cm}
-        При неизвестных распределениях типов задач и ядре MDP планировщик
-        обучается онлайн. Эпизодическая структура:
-
-        \begin{itemize}
-                \item \textbf{Фаза перемешивания} (длина $d^{[k]}$):
-                        вывод цепи Маркова на стационарное распределение
-                \item \textbf{Стационарная фаза} (длина $l^{[k]}$):
-                        сбор платежей $\hat{p}^{[k]}$, обновление оценок
-        \end{itemize}
-
-        \vspace{0.15cm}
-        \textbf{Гарантии} при $T \to \infty$ (с вер. $\geq 1 - O(\zeta)$):
-
-        \vspace{0.1cm}
-        \begin{columns}
-                \column{0.5\textwidth}
-                \begin{tabular}{ll}
-                        Регрет благосостояния &
-                        $\tilde{O}(\varepsilon T n + T^{2/3} n)$ \\[3pt]
-                        Регрет продавца &
-                        $\tilde{O}(\varepsilon T n^2 + T^{2/3} n^2)$ \\[3pt]
-                        Регрет покупателей &
-                        $\tilde{O}(\varepsilon T n^2 + T^{2/3} n^2)$
-                \end{tabular}
-
-                \column{0.5\textwidth}
-                \begin{shadowbox}
-                        \footnotesize Асимптотически: эффективность,
-                        стимульная совместимость и индивидуальная
-                        рациональность~--- одновременно
-                \end{shadowbox}
-        \end{columns}
-\end{frame}
-\addtocounter{framenumber}{-1}
 
 \begin{frame}{Extra}
         \textbf{Пример: $K_P = K_E = 1$, одно свободное ядро типа $\kappa$}
@@ -795,11 +703,12 @@
 
         \vspace{0.2cm}
         \textbf{Платёж победителя:}
-        $$p_{i^*} = \phi_\kappa^{-1}\!\left(\phi_\kappa(\theta_j) +
+        $$p_{i^*} = \phi_\kappa(\theta_j) +
                 \bigl(\delta^{m_\kappa(l_j)} - \delta^{m_\kappa(l_{i^*})}\bigr)
-        \bar{W}_\kappa \;\Big|\; l_{i^*}\right)$$
+        \bar{W}_\kappa$$
 
-        где $j$~--- задача на втором месте.
+        где $j$~--- задача на втором месте,
+        $\bar W_\kappa$~--- ожидаемое будущее благосостояние кластера.
 
         \vspace{0.2cm}
         \begin{shadowbox}
@@ -810,40 +719,6 @@
                 < c_P \cdot l_i$ при $\sigma < \gamma$).
                 Оптимальная стратегия нетривиальна.
         \end{shadowbox}
-\end{frame}
-\addtocounter{framenumber}{-1}
-
-\begin{frame}{Extra}
-        \textbf{IC при жёстком бюджетном ограничении}
-
-        \vspace{0.15cm}
-        \textbf{Проблема.} В классическом VCG
-        $p_i^{\text{VCG}} > B_i$ создаёт стимул к~искажению ставки,
-        чтобы попасть в~допустимое множество~--- IC ломается
-        \footnotesize{(Dobzinski, Lavi, Nisan 2008)}.
-
-        \vspace{0.15cm}
-        \textbf{Наш случай.} Бюджет $B_i$~--- функция класса обслуживания
-        $\kappa_i\in\{\text{RT},\text{int},\text{batch},\text{bg}\}$,
-        фиксированного приоритетом процесса
-        (\texttt{policy}/\texttt{nice}) до поступления в~механизм.
-        Класс~--- public type, не~объект стратегии.
-
-        \vspace{0.15cm}
-        \begin{shadowbox}
-                \footnotesize
-                \textbf{Утверждение.} При фиксированном классе $\kappa$
-                и~соответствующем бюджете $B(\kappa)$ механизм
-                IC на~подтипе $(v_i, l_i)$: условия Sano (Т.~1)
-                выполняются для $\alpha_i^\kappa$, платёж
-                $p_i \leq B(\kappa)$ не~зависит от сообщения
-                агента~$\Rightarrow$ правдивое $(v_i, l_i)$~---
-                доминирующая стратегия внутри класса.
-        \end{shadowbox}
-
-        \vspace{0.1cm}
-        {\scriptsize Между классами~--- approximate IC; задача с~$p_i^{\text{VCG}} > B_i$
-        отсекается аллокацией (§8.3 модели), не~перепрайсингом.}
 \end{frame}
 \addtocounter{framenumber}{-1}
 
