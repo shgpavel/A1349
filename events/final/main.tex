@@ -187,7 +187,7 @@
                 \end{shadowbox3}
 
                 \vspace{0.4em}
-                {\small\itshape Бакалаврская работа}
+                {\small\itshape Выпускная квалификационная работа}
         \end{center}
         \vspace{1.1em}
 
@@ -318,8 +318,8 @@
         \vspace{1.8em}
         \raggedright
         \scriptsize\textit{Вывод:} sched\_ext выигрывает по четырём
-        критериям из пяти. Умеренные накладные расходы фреймворка~--
-        сознательный компромисс за изоляцию ошибок и
+        критериям из пяти. Умеренные накладные расходы фреймворка
+        остаются сознательным компромиссом за изоляцию ошибок и
         поддерживаемый интерфейс
 \end{frame}
 
@@ -372,18 +372,20 @@
                 \column{0.5\textwidth}
                 \textbf{Задачи как агенты}
                 \begin{itemize}
-                        \item Тип $\theta_i = (v_i, l_i)$ (оценка и длина)
+                        \item Тип $\theta_i = (v_i, l_i)$: ценность $v_i$,
+                                длина $l_i$
                         \item Полезность как маргинальный вклад
                                 $U_i = W(s^t) - W_{-i}(s^t) \geq 0$
-                        \item Бюджет $B_i > 0$ по классу обслуживания:
+                        \item Бюджет $B_i(\chi_i) > 0$ по классу
+                                обслуживания $\chi_i$:
                 \end{itemize}
                 \vspace{0.2em}
                 \hspace{2em}{\footnotesize
-                        \begin{tabular}{@{}ll@{}}
-                                Реального времени & $B_{RT}$ \\
-                                Интерактивный     & $B_{int}$ \\
-                                Пакетный          & $B_{batch}$ \\
-                                Фоновый           & $B_{bg}$
+                        \begin{tabular}{@{}l@{}}
+                                реального времени \\
+                                интерактивный \\
+                                пакетный \\
+                                фоновый
                 \end{tabular}}
         \end{columns}
 
@@ -417,14 +419,16 @@
 
                 \vspace{0.2em}
                 \textbf{Действие} $a_i^t = (a_{i,P}, a_{i,E})
-                \in \{0,1\}^2$
-                $$\sum_i a_{i,P} \leq K_P,\quad
-                \sum_i a_{i,E} \leq K_E$$
+                \in \{0,1\}^2$, $a_{i,P} + a_{i,E} \leq 1$
+                $$\sum_i a_{i,P} \leq K_P^t,\quad
+                \sum_i a_{i,E} \leq K_E^t$$
+                {\scriptsize ($K_\kappa^t$~-- число свободных ядер
+                кластера $\kappa$ в момент $t$)}
 
                 \vspace{0.1em}
                 \textbf{Эффективная ценность} ($\kappa \in \{P, E\}$)
-                $$\phi_P(\theta_i) = v_i - c_P l_i$$
-                $$\phi_E(\theta_i) = v_i - c_E \lceil l_i \sigma \rceil$$
+                $$\phi_\kappa(\theta_i) = v_i - c_\kappa\, m_\kappa(l_i)$$
+                {\scriptsize $m_P(l) = l$,\; $m_E(l) = \lceil l\sigma \rceil$}
 
                 \column{0.5\textwidth}
                 \textbf{Социальное благосостояние} (Беллман,
@@ -444,7 +448,7 @@
 \end{frame}
 
 
-\begin{frame}{Реализация и аппроксимации}
+\begin{frame}{Реализация}
         \footnotesize
         \textbf{Решение аукциона.} Задача направляется в одну из трёх
         кластерных DSQ по $\kappa^* = \arg\max_\kappa \phi_\kappa(\theta_i)$
@@ -469,10 +473,11 @@
 
                         \vspace{0.2em}
                         \footnotesize
-                        $\phi_E > \phi_P$ либо перегрузка P-кластера
+                        $\phi_E > \phi_P$ либо короткая задача
+                        при перегрузке P-кластера
 
                         \vspace{0.1em}
-                        {\scriptsize $Q_P \geq K_P,\ \ Q_P K_E > Q_E K_P$}
+                        {\scriptsize $Q_P \geq K_P$ и $Q_P K_E > Q_E K_P$}
                 \end{shadowbox2}
 
                 \column{0.33\textwidth}
@@ -489,21 +494,20 @@
         \end{columns}
 
         \vspace{0.6em}
-        \footnotesize\textbf{Полная VCG-оптимизация требует знания
-        $W(s^{t+1})$ и комбинаторного перебора на каждом событии.
-        Для O(1) на событие модель ослаблена следующим образом.}
+        \footnotesize\textbf{Ослабления модели в реализации}
 
         \vspace{0.2em}
         \begin{columns}[T]
                 \column{0.5\textwidth}
                 {\footnotesize
                 \begin{itemize}\setlength{\itemsep}{0pt}
+                        \item $v_i$ наблюдается через вес задачи
+                                \texttt{p->scx.weight}
+                                (\texttt{nice}, \texttt{cgroup})
                         \item $W_{-i}(s^t) \to$ кластерная EWMA
                                 $\bar W_\kappa$ по реализованным
                                 $|\phi|$
-                        \item $l_i$~-- EWMA по истории исполнения
-                        \item $v_i$~-- вес задачи
-                                (\texttt{p->scx.weight})
+                        \item $l_i \to$ EWMA по истории исполнения
                 \end{itemize}}
 
                 \column{0.5\textwidth}
@@ -638,16 +642,6 @@
 \begin{frame}{Выводы}
         \footnotesize
         \begin{itemize}\setlength{\itemsep}{0.4em}
-                \item Проведён сравнительный анализ подходов к
-                        реализации планировщика и выбран
-                        \texttt{sched\_ext}
-                \item Построена математическая модель распределения
-                        квантов P/E ядер как динамического
-                        аукциона VCG
-                \item Реализован планировщик \texttt{scx\_A1349}
-                        с маршрутизацией по эффективной ценности,
-                        тремя кластерными DSQ и бюджетом в форме
-                        корзины токенов
                 \item На Intel Core Ultra 7 265K (8P + 12E) планировщик
                         \texttt{scx\_A1349} превосходит штатный EEVDF
                         на hackbench при трёх уровнях нагрузки на
@@ -676,6 +670,25 @@
 \end{frame}
 
 
+\begin{frame}{Заключение}
+        \footnotesize
+        \begin{itemize}\setlength{\itemsep}{0.4em}
+                \item Проведён сравнительный анализ подходов
+                        к реализации планировщика и выбран
+                        \texttt{sched\_ext}
+                \item Построена математическая модель распределения
+                        квантов P/E ядер как динамического
+                        аукциона VCG
+                \item Реализован планировщик \texttt{scx\_A1349}
+                        на основе построенной модели
+                \item Проведён эксперимент на реальном
+                        гетерогенном оборудовании, проведено
+                        сравнение со штатным планировщиком Linux
+                        и современными eBPF-планировщиками
+        \end{itemize}
+\end{frame}
+
+
 {
         \setbeamertemplate{frametitle}{}
         \begin{frame}
@@ -689,6 +702,43 @@
 
 
 \appendix
+
+\begin{frame}{Extra}
+        \scriptsize
+        \begin{description}
+                \item[EEVDF] Earliest Eligible Virtual Deadline First~--- штатный
+                        планировщик ядра Linux с 6.6
+                \item[sched\_ext] инфраструктура ядра для подключаемых
+                        планировщиков на eBPF
+                \item[eBPF] extended Berkeley Packet Filter, верифицируемый
+                        байт-код, исполняемый в ядре
+                \item[ghOSt] пользовательский планировщик от Google,
+                        политика в user-space
+                \item[scx\_LAVD] Latency-Aware Virtual Deadline, eBPF-планировщик
+                        с учётом отзывчивости
+                \item[scx\_EEVDF] порт EEVDF поверх sched\_ext, эталон накладных
+                        расходов фреймворка
+                \item[DSQ] Dispatch Queue, очередь готовых задач внутри sched\_ext
+                \item[VCG] Vickrey-Clarke-Groves, аукцион с правдивыми оценками
+                \item[MDP] Markov Decision Process, марковский процесс принятия
+                        решений
+                \item[EWMA] Exponentially Weighted Moving Average,
+                        экспоненциально-взвешенное скользящее среднее
+                \item[RAPL] Running Average Power Limit, счётчики энергии Intel
+                \item[hackbench] бенчмарк IPC через сокеты/каналы,
+                        короткоживущие процессы
+                \item[sysbench oltp\_read\_only] OLTP-нагрузка чтения
+                        к PostgreSQL
+                \item[schbench] бенчмарк хвостовых задержек планирования
+                        от Chris Mason
+                \item[p99 / p99.9] 99-й и 99{,}9-й перцентили задержки
+                \item[P / E ядра] Performance / Efficient ядра в гибридной
+                        архитектуре Intel
+                \item[$\sigma$] коэффициент замедления, отношение пиковой
+                        производительности P-ядра к E-ядру
+        \end{description}
+\end{frame}
+\addtocounter{framenumber}{-1}
 
 \begin{frame}{Extra}
         \textbf{Пример: $K_P = K_E = 1$, одно свободное ядро типа $\kappa$}
@@ -712,10 +762,10 @@
         \vspace{0.2cm}
         \begin{shadowbox}
                 \footnotesize
-                $\phi_P(\theta_i) > \phi_E(\theta_i)$ выполняется не всегда:
-                при малом $v_i$ и большом $l_i$ E-ядро может дать
-                большую эффективную ценность ($c_E \cdot \lceil l_i\sigma\rceil
-                < c_P \cdot l_i$ при $\sigma < \gamma$).
+                $\phi_P(\theta_i) > \phi_E(\theta_i)$ выполняется не всегда.
+                При малом $v_i$ и большом $l_i$ E-ядро может дать
+                большую эффективную ценность ($c_E \lceil l_i\sigma\rceil
+                < c_P l_i$ при $\sigma < c_P/c_E$).
                 Оптимальная стратегия нетривиальна.
         \end{shadowbox}
 \end{frame}
