@@ -23,6 +23,7 @@ matplotlib.use("Agg")
 matplotlib.rcParams["pdf.fonttype"] = 42
 matplotlib.rcParams["ps.fonttype"] = 42
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 
 # ---------------------------------------------------------------------------
 # Color scheme per scheduler
@@ -66,7 +67,7 @@ THROUGHPUT_PLOTS = [
         "sysbench_tps",
         "throughput_sysbench_tps",
         "Sysbench OLTP: пропускная способность",
-        "sysbench (трз/с)",
+        "транзакций в секунду",
         False,
     ),
     (
@@ -272,9 +273,10 @@ def plot_bar_metric(
         return False
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.set_title(title)
+    ax.set_title(title, fontsize=14)
     note = " (меньше — лучше)" if lower_better else " (больше — лучше)"
-    ax.set_ylabel(ylabel + note)
+    ax.set_ylabel(ylabel + note, fontsize=12)
+    ax.tick_params(axis="both", labelsize=11)
 
     values = []
     labels = []
@@ -286,19 +288,24 @@ def plot_bar_metric(
         colors.append(color_for(sched))
 
     if values:
-        bars = ax.bar(labels, values, color=colors, alpha=0.8, edgecolor="black")
+        bars = ax.bar(labels, values, color=colors, alpha=1.0, edgecolor="black")
         for bar, val in zip(bars, values, strict=True):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
-                bar.get_height(),
+                bar.get_height() * 0.5,
                 f"{val:.2f}",
                 ha="center",
-                va="bottom",
-                fontsize=7,
+                va="center",
+                fontsize=10,
+                color="white",
+                fontweight="bold",
+                path_effects=[
+                    pe.Stroke(linewidth=1.6, foreground="black"),
+                    pe.Normal(),
+                ],
             )
-        # Add top margin so labels don't clip
         ymin, ymax = ax.get_ylim()
-        ax.set_ylim(ymin, ymax * 1.1)
+        ax.set_ylim(ymin, ymax * 1.05)
     else:
         add_no_data(ax)
 
@@ -645,7 +652,7 @@ def write_summary(data, scheds, metadata, output_dir):
     # One-shot benchmarks from metadata
     oneshot_metrics = [
         ("hackbench_time_sec", "Hackbench (с)", True),
-        ("sysbench_tps", "Sysbench OLTP (трз/с)", False),
+        ("sysbench_tps", "Sysbench OLTP (транзакций в секунду)", False),
         ("sysbench_qps", "Sysbench OLTP (зпр/с)", False),
         ("schbench_wakeup_p99_0_usec", "schbench пробуждение p99 (мкс)", True),
         ("schbench_wakeup_p99_9_usec", "schbench пробуждение p99.9 (мкс)", True),

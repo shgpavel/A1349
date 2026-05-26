@@ -24,6 +24,7 @@ matplotlib.use("Agg")
 matplotlib.rcParams["pdf.fonttype"] = 42
 matplotlib.rcParams["ps.fonttype"] = 42
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 
 CI_LEVEL = 0.95
 WORKLOAD_PHASES = ("hackbench", "sysbench", "schbench")
@@ -67,7 +68,7 @@ TS_METRICS = [
 ONESHOT_METRICS = [
     ("total_energy_joules", "Суммарная энергия CPU (Дж)", True),
     ("hackbench_time_sec", "Hackbench: время (с)", True),
-    ("sysbench_tps", "Sysbench OLTP трз/с", False),
+    ("sysbench_tps", "Sysbench OLTP, транзакций в секунду", False),
     ("sysbench_qps", "Sysbench OLTP зпр/с", False),
     ("schbench_wakeup_p99_0_usec", "schbench: пробуждение p99 (мкс)", True),
     ("schbench_wakeup_p99_9_usec", "schbench: пробуждение p99.9 (мкс)", True),
@@ -202,83 +203,106 @@ def grouped_bar(ax, scheds, levels, values, errs_lo, errs_hi, title, ylabel, low
     (Linux EEVDF / `default`) inside the bar — same style as figure_combined.
     """
     n_lvl = len(levels)
-    width = 0.8 / n_lvl
+    width = 0.78 / n_lvl
     x = np.arange(len(scheds))
 
-    lvl_colors = plt.cm.viridis(np.linspace(0.15, 0.85, n_lvl))
+    palette = ["#a6c8e0", "#5b8db8", "#2c5d8a"]
+    if n_lvl <= len(palette):
+        lvl_colors = palette[:n_lvl]
+    else:
+        lvl_colors = plt.cm.Blues(np.linspace(0.35, 0.85, n_lvl))
 
-    bar_specs = []  # (rect, sched, lvl, val)
+    bar_specs = []
     for i, lvl in enumerate(levels):
         vals = [values[s].get(lvl, np.nan) for s in scheds]
         elo = [errs_lo[s].get(lvl, 0) for s in scheds]
         ehi = [errs_hi[s].get(lvl, 0) for s in scheds]
-        offsets = x - 0.4 + width * (i + 0.5)
+        offsets = x - 0.39 + width * (i + 0.5)
         rects = ax.bar(
             offsets,
             vals,
             width,
             color=lvl_colors[i],
             label=lvl,
-            edgecolor="black",
-            linewidth=0.4,
+            edgecolor="white",
+            linewidth=0.6,
             yerr=[elo, ehi],
             capsize=3,
-            error_kw={"elinewidth": 0.8},
+            error_kw={"elinewidth": 0.8, "ecolor": "#444"},
         )
         for rect, s, v in zip(rects, scheds, vals, strict=True):
             bar_specs.append((rect, s, lvl, v))
 
-    # Value on top + %-diff-vs-baseline inside non-baseline bars.
-    fontsize_val = max(5, 7 - n_lvl // 2)
     for rect, sched, lvl, val in bar_specs:
         if val is None or (isinstance(val, float) and np.isnan(val)):
             continue
         h = rect.get_height()
         cx = rect.get_x() + rect.get_width() / 2
-        # Value label on top
-        ax.text(
-            cx,
-            h,
-            f"{val:.2f}" if abs(val) < 1000 else f"{val:.0f}",
+        base = values.get(BASELINE_SCHED, {}).get(lvl)
+        has_pct = (
+            sched != BASELINE_SCHED
+            and base is not None
+            and not (isinstance(base, float) and (np.isnan(base) or base == 0))
+        )
+        val_str = f"{val:.2f}" if abs(val) < 1000 else f"{val:.0f}"
+        ax.annotate(
+            val_str,
+            xy=(cx, h),
+            xytext=(0, 4),
+            textcoords="offset points",
             ha="center",
             va="bottom",
-            fontsize=fontsize_val,
+            fontsize=10,
             fontweight="bold",
-            color="#000000",
+            color="#1f1f1f",
+            annotation_clip=False,
         )
-        # %-diff vs baseline at same level
-        if sched == BASELINE_SCHED:
-            continue
-        base = values.get(BASELINE_SCHED, {}).get(lvl)
-        if base is None or (isinstance(base, float) and (np.isnan(base) or base == 0)):
-            continue
-        pct = (val - base) / abs(base) * 100
-        ax.text(
-            cx,
-            h * 0.5,
-            f"{pct:+.1f}%",
-            ha="center",
-            va="center",
-            fontsize=fontsize_val,
-            fontweight="bold",
-            color="#000000",
-        )
+        if has_pct:
+            pct = (val - base) / abs(base) * 100
+            better = (pct > 0) if lower_better is False else (pct < 0)
+            sign_color = "#1a7f37" if better else "#b42318"
+            ax.annotate(
+                f"{pct:+.1f}%",
+                xy=(cx, h),
+                xytext=(0, 16),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                fontweight="bold",
+                color=sign_color,
+                annotation_clip=False,
+            )
 
-    # Headroom for top labels.
     ymin, ymax = ax.get_ylim()
-    ax.set_ylim(ymin, ymax * 1.15)
+    ax.set_ylim(ymin, ymax * 1.28)
 
     note = (
         " (меньше — лучше)"
         if lower_better
         else (" (больше — лучше)" if lower_better is False else "")
     )
-    ax.set_title(title + note, fontsize=10)
-    ax.set_ylabel(ylabel, fontsize=9)
+    ax.set_title(title + note, fontsize=14, pad=12)
+    ax.set_ylabel(ylabel, fontsize=12)
     ax.set_xticks(x)
-    ax.set_xticklabels([label_for(s) for s in scheds], rotation=0, fontsize=8)
-    ax.grid(True, alpha=0.3, axis="y")
-    ax.legend(title=f"Уровень (% от {label_for(BASELINE_SCHED)})", fontsize=7, title_fontsize=8)
+    ax.set_xticklabels([label_for(s) for s in scheds], rotation=0, fontsize=11)
+    ax.tick_params(axis="y", labelsize=10)
+    ax.grid(True, alpha=0.25, axis="y", linestyle="--", linewidth=0.6)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    ax.spines["left"].set_color("#888")
+    ax.spines["bottom"].set_color("#888")
+    leg = ax.legend(
+        title=f"Уровень нагрузки (% от {label_for(BASELINE_SCHED)})",
+        fontsize=10,
+        title_fontsize=10,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.12),
+        ncol=n_lvl,
+        frameon=False,
+    )
+    leg._legend_box.align = "center"
 
 
 def plot_grouped_bar_metric(
