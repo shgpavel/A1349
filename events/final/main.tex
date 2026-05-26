@@ -317,21 +317,20 @@
 
         \vspace{1.8em}
         \raggedright
-        \scriptsize\textit{Вывод:} sched\_ext выигрывает по четырём
-        критериям из пяти. Умеренные накладные расходы фреймворка
-        остаются сознательным компромиссом за изоляцию ошибок и
-        поддерживаемый интерфейс
+        \scriptsize\textit{Вывод:} sched\_ext является лучшим
+        вариантом по приведённым критериям. Умеренные накладные расходы фреймворка —
+        сознательный компромисс за остальные преимущества
 \end{frame}
 
 
 \begin{frame}{sched\_ext}
         \begin{columns}[T]
-                \column{0.74\textwidth}
+                \column{0.72\textwidth}
                 \centering
-                \includegraphics[width=\linewidth,height=0.85\textheight,keepaspectratio]{res/sched_ext.pdf}\\[-0.8em]
+                \includegraphics[width=\linewidth,height=0.92\textheight,keepaspectratio]{res/sched_ext.pdf}\\[-0.8em]
                 {\tiny \textbf{Рис.~1.} Механизм работы sched\_ext}
 
-                \column{0.26\textwidth}
+                \column{0.28\textwidth}
                 \vspace{0.7em}
                 \textbf{\footnotesize DSQ} {\scriptsize(dispatch queue)}
                 {\scriptsize
@@ -345,10 +344,19 @@
                 \textbf{\footnotesize Цикл планирования}
                 {\scriptsize
                         \begin{itemize}\setlength{\itemsep}{0pt}
-                                \item \texttt{select\_cpu}
-                                \item \texttt{enqueue}
-                                \item \texttt{dispatch}
+                                \item \texttt{select\_cpu()}
+                                \item \texttt{enqueue()}
+                                \item \texttt{dispatch()}
                                 \item \texttt{running} / \texttt{stopping}
+                \end{itemize}}
+
+                \vspace{0.4em}
+                \textbf{\footnotesize Загрузка планировщика}
+                {\scriptsize
+                        \begin{itemize}\setlength{\itemsep}{0pt}
+                                \item компиляция
+                                \item верификатор ядра
+                                \item вызов \texttt{bpf()}
                 \end{itemize}}
         \end{columns}
 \end{frame}
@@ -685,6 +693,9 @@
                         гетерогенном оборудовании, проведено
                         сравнение со штатным планировщиком Linux
                         и современными eBPF-планировщиками
+                \item По части материалов работы подготовлена
+                        статья, прошедшая рецензирование,
+                        и сделан доклад на конференции CPS
         \end{itemize}
 \end{frame}
 
@@ -702,6 +713,74 @@
 
 
 \appendix
+
+\begin{frame}[allowframebreaks]{Список литературы}
+        \tiny
+        \begin{thebibliography}{99}
+                \setlength{\itemsep}{0.35em}
+
+                \bibitem{stoica}
+                Stoica~I., Abdel-Wahab~H. Earliest Eligible Virtual Deadline
+                First: A Flexible and Accurate Mechanism for Proportional
+                Share Resource Allocation: Technical Report TR-95-22. ---
+                Norfolk: Old Dominion University, 1995.
+
+                \bibitem{biglittle}
+                Greenhalgh~P. Big.LITTLE Processing with ARM Cortex-A15 \&
+                Cortex-A7: ARM White Paper. --- Cambridge: ARM Ltd., 2011.
+
+                \bibitem{intelhybrid}
+                Rotem~E. et~al. Alder Lake Architecture // 2021 IEEE Hot
+                Chips 33 Symposium (HCS). --- Palo Alto, CA, USA, 2021. ---
+                P.~1--23. --- DOI:~10.1109/HCS52781.2021.9567097.
+
+                \bibitem{pie}
+                Van~Craeynest~K., Jaleel~A., Eeckhout~L., Narvaez~P.,
+                Emer~J.~S. Scheduling Heterogeneous Multi-Cores through
+                Performance Impact Estimation (PIE) // Proceedings of the
+                39th Annual International Symposium on Computer
+                Architecture (ISCA 2012). --- New York: ACM, 2012. ---
+                P.~213--224.
+
+                \bibitem{ghost}
+                Humphries~J.~T., Natu~N., Chaugule~A., Weisse~O.,
+                Rhoden~B., Don~J., Rizzo~L., Rombakh~O., Turner~P.,
+                Kozyrakis~C. ghOSt: Fast \& Flexible User-Space Delegation
+                of Linux Scheduling // Proceedings of the 28th ACM
+                Symposium on Operating Systems Principles (SOSP 2021). ---
+                New York: ACM, 2021. --- P.~588--604.
+
+                \bibitem{schedext}
+                Corbet~J. The BPF extensible scheduler class
+                [Электронный ресурс] // LWN.net. --- 30.11.2022. ---
+                URL: \url{https://lwn.net/Articles/916291/}
+                (дата обращения: 20.11.2025).
+
+                \bibitem{lwn_schedext_lpc}
+                Corbet~J. Sched\_ext at LPC 2024 [Электронный ресурс] //
+                LWN.net. --- 2024. ---
+                URL: \url{https://lwn.net/Articles/991205/}
+                (дата обращения: 11.09.2025).
+
+                \bibitem{lavd}
+                Galin~M., Hedblom~A. Linux Kernel Scheduler Evaluation for
+                Performance-Critical Telecom Workloads: Master's Thesis. ---
+                Linköping: Linköping University, 2025. --- 74~p.
+
+                \bibitem{sano}
+                Sano~R. A Dynamic Mechanism Design for Scheduling with
+                Different Use Lengths: KIER Discussion Paper No.~924. ---
+                Kyoto: Institute of Economic Research, Kyoto University,
+                2015.
+
+                \bibitem{dln}
+                Dobzinski~S., Lavi~R., Nisan~N. Multi-unit Auctions with
+                Budget Limits // Games and Economic Behavior. --- 2012. ---
+                Vol.~74, No.~2. --- P.~486--503.
+
+        \end{thebibliography}
+\end{frame}
+
 
 \begin{frame}{Extra}
         \scriptsize
@@ -725,13 +804,7 @@
                 \item[EWMA] Exponentially Weighted Moving Average,
                         экспоненциально-взвешенное скользящее среднее
                 \item[RAPL] Running Average Power Limit, счётчики энергии Intel
-                \item[hackbench] бенчмарк IPC через сокеты/каналы,
-                        короткоживущие процессы
-                \item[sysbench oltp\_read\_only] OLTP-нагрузка чтения
-                        к PostgreSQL
-                \item[schbench] бенчмарк хвостовых задержек планирования
-                        от Chris Mason
-                \item[p99 / p99.9] 99-й и 99{,}9-й перцентили задержки
+                \item[p99 / p99.9] 99-й и 99{,}9-й процентили задержки
                 \item[P / E ядра] Performance / Efficient ядра в гибридной
                         архитектуре Intel
                 \item[$\sigma$] коэффициент замедления, отношение пиковой
