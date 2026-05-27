@@ -355,8 +355,8 @@
                 {\scriptsize
                         \begin{itemize}\setlength{\itemsep}{0pt}
                                 \item компиляция
-                                \item верификатор ядра
                                 \item вызов \texttt{bpf()}
+                                \item верификатор ядра
                 \end{itemize}}
         \end{columns}
 \end{frame}
@@ -382,7 +382,8 @@
                 \begin{itemize}
                         \item Тип $\theta_i = (v_i, l_i)$: ценность $v_i$,
                                 длина $l_i$
-                        \item Полезность как маргинальный вклад
+                        \item Полезность как маргинальный вклад в
+                                социальное благосостояние $W$:
                                 $U_i = W(s^t) - W_{-i}(s^t) \geq 0$
                         \item Бюджет $B_i(\chi_i) > 0$ по классу
                                 обслуживания $\chi_i$:
@@ -403,8 +404,7 @@
                 процессора~-- \textbf{недолговечный ресурс}
                 (неиспользованный квант теряется безвозвратно). Их
                 распределение моделируется динамическим аукционом VCG
-                с задачами\nobreakdash-агентами типа
-                $\theta_i = (v_i, l_i)$, максимизирующим социальное
+                с задачами\nobreakdash-агентами, максимизирующим социальное
                 благосостояние
         \end{shadowbox4}
 \end{frame}
@@ -458,8 +458,10 @@
 
 \begin{frame}{Реализация}
         \footnotesize
-        \textbf{Решение аукциона.} Задача направляется в одну из трёх
-        кластерных DSQ по $\kappa^* = \arg\max_\kappa \phi_\kappa(\theta_i)$
+        \textbf{Решение аукциона}
+
+        Задача направляется в DSQ\_P или DSQ\_E по
+        $\kappa^* = \arg\max_{\kappa\in\{P,E\}} \phi_\kappa(\theta_i)$
 
         \vspace{0.3em}
         \begin{columns}[T]
@@ -497,7 +499,7 @@
                         $B_i^t < B_i^{\max} / 10$
 
                         \vspace{0.1em}
-                        Низший приоритет, обслуживается после пополнения
+                        Низкий приоритет, обслуживается после пополнения
                 \end{shadowbox2}
         \end{columns}
 
@@ -509,9 +511,8 @@
                 \column{0.5\textwidth}
                 {\footnotesize
                 \begin{itemize}\setlength{\itemsep}{0pt}
-                        \item $v_i$ наблюдается через вес задачи
+                        \item $v_i$ сообщается через вес задачи
                                 \texttt{p->scx.weight}
-                                (\texttt{nice}, \texttt{cgroup})
                         \item $W_{-i}(s^t) \to$ кластерная EWMA
                                 $\bar W_\kappa$ по реализованным
                                 $|\phi|$
@@ -552,10 +553,11 @@
 
                         \vspace{0.2em}
                         \footnotesize
-                        Linux EEVDF \textit{(эталон)}\\
-                        scx\_EEVDF\\
-                        scx\_LAVD\\
-                        scx\_A1349 (VCG)
+                        Linux EEVDF\\
+                        \textit{(эталон)}\\[0.2em]
+                        scx\_EEVDF\\[0.2em]
+                        scx\_LAVD\\[0.2em]
+                        \textbf{scx\_A1349 (VCG)}
                 \end{shadowbox}
 
                 \column{0.47\textwidth}
@@ -565,20 +567,20 @@
                         \vspace{0.12cm}
                         \footnotesize
                 \begin{itemize}\setlength{\itemsep}{0.12cm}\setlength{\parskip}{0pt}
-                                \item \textbf{hackbench}~-- группы процессов,
-                                        обмен короткими сообщениями.
-                                        Массовое порождение короткоживущих
-                                        задач, стресс пробуждений и миграций
+                                \item \textbf{hackbench}~-- массовое
+                                        порождение процессов с интенсивным
+                                        межпроцессным обменом и постоянными
+                                        переключениями контекста
 
                                 \item \textbf{sysbench}~--
                                         \texttt{oltp\_read\_only}, транзакции
                                         чтения к PostgreSQL. Потоки
-                                        блокируются на ожидании ответа БД
+                                        блокируются на ожидании ответа базы данных
 
-                                \item \textbf{schbench}~-- задержки
-                                        планирования, веб-нагрузка. Запрос~--
-                                        две фазы сна и фаза матричных
-                                        вычислений
+                                \item \textbf{schbench}~-- имитация
+                                        веб-обработчика, рабочие потоки
+                                        чередуют короткие фазы ожидания и
+                                        матричных вычислений
                         \end{itemize}
                 \end{shadowbox}
 
@@ -650,30 +652,24 @@
 \begin{frame}{Выводы}
         \footnotesize
         \begin{itemize}\setlength{\itemsep}{0.4em}
-                \item На Intel Core Ultra 7 265K (8P + 12E) планировщик
-                        \texttt{scx\_A1349} превосходит штатный EEVDF
-                        на hackbench при трёх уровнях нагрузки на
-                        $4{,}5$\,/\,$8{,}5$\,/\,$1{,}4\,\%$, а также
-                        лидирует по средней пропускной способности
-                        schbench при умеренной и стресс-нагрузке
-                        на $51{,}3$\,/\,$55{,}7\,\%$. При стресс-нагрузке
-                        задержка обслуживания запроса p99.9
-                        составляет $24{,}5$\,мс против
-                        $\approx 1{,}7$\,с у штатного EEVDF
-                \item Определена область неприменимости. На sysbench
-                        \texttt{scx\_A1349} уступает штатному EEVDF на
-                        $1{,}6$\,/\,$0{,}8$\,/\,$7{,}4\,\%$. Все
-                        \texttt{sched\_ext}-планировщики отстают,
-                        причём \texttt{scx\_EEVDF} без учёта
-                        гетерогенности~-- сильнее (до $39{,}7\,\%$),
-                        что указывает на накладные расходы фреймворка
-                        при высоком темпе пробуждений на IPC
-                \item Атрибуция эффектов конкретным факторам
+                \item \texttt{scx\_A1349} превосходит штатный EEVDF
+                        на hackbench на $4{,}5$\,/\,$8{,}5$\,/\,$1{,}4\,\%$
+                        и лидирует на schbench по средней пропускной
+                        способности при умеренной и стресс-нагрузке
+                        на $51{,}3$\,/\,$55{,}7\,\%$. Задержка p99.9
+                        при стресс-нагрузке $24{,}5$\,мс против
+                        $\approx 1{,}7$\,с у EEVDF
+                \item sysbench единственная нагрузка где
+                        \texttt{scx\_A1349} проигрывает EEVDF
+                        ($1{,}6$\,/\,$0{,}8$\,/\,$7{,}4\,\%$).
+                        Отстают все \texttt{sched\_ext}-планировщики
+                        до $39{,}7\,\%$, причиной могут являться
+                        накладные расходы фреймворка
+                \item Разделение вклада отдельных факторов
                         реализации (аукционный платёж, корзина
                         токенов, выбор P-ядра, привязанные к ядрам
-                        очереди) остаётся гипотетической, разделение
-                        вкладов требует серии экспериментов с
-                        поочерёдным отключением факторов
+                        очереди) выходит за рамки работы и требует
+                        серии экспериментов с поочерёдным отключением
         \end{itemize}
 \end{frame}
 
@@ -681,9 +677,9 @@
 \begin{frame}{Заключение}
         \footnotesize
         \begin{itemize}\setlength{\itemsep}{0.4em}
-                \item Проведён сравнительный анализ подходов
-                        к реализации планировщика и выбран
-                        \texttt{sched\_ext}
+                \item Обоснован выбор \texttt{sched\_ext} среди
+                        четырёх рассмотренных подходов к реализации
+                        планировщика
                 \item Построена математическая модель распределения
                         квантов P/E ядер как динамического
                         аукциона VCG
@@ -713,74 +709,6 @@
 
 
 \appendix
-
-\begin{frame}[allowframebreaks]{Список литературы}
-        \tiny
-        \begin{thebibliography}{99}
-                \setlength{\itemsep}{0.35em}
-
-                \bibitem{stoica}
-                Stoica~I., Abdel-Wahab~H. Earliest Eligible Virtual Deadline
-                First: A Flexible and Accurate Mechanism for Proportional
-                Share Resource Allocation: Technical Report TR-95-22. ---
-                Norfolk: Old Dominion University, 1995.
-
-                \bibitem{biglittle}
-                Greenhalgh~P. Big.LITTLE Processing with ARM Cortex-A15 \&
-                Cortex-A7: ARM White Paper. --- Cambridge: ARM Ltd., 2011.
-
-                \bibitem{intelhybrid}
-                Rotem~E. et~al. Alder Lake Architecture // 2021 IEEE Hot
-                Chips 33 Symposium (HCS). --- Palo Alto, CA, USA, 2021. ---
-                P.~1--23. --- DOI:~10.1109/HCS52781.2021.9567097.
-
-                \bibitem{pie}
-                Van~Craeynest~K., Jaleel~A., Eeckhout~L., Narvaez~P.,
-                Emer~J.~S. Scheduling Heterogeneous Multi-Cores through
-                Performance Impact Estimation (PIE) // Proceedings of the
-                39th Annual International Symposium on Computer
-                Architecture (ISCA 2012). --- New York: ACM, 2012. ---
-                P.~213--224.
-
-                \bibitem{ghost}
-                Humphries~J.~T., Natu~N., Chaugule~A., Weisse~O.,
-                Rhoden~B., Don~J., Rizzo~L., Rombakh~O., Turner~P.,
-                Kozyrakis~C. ghOSt: Fast \& Flexible User-Space Delegation
-                of Linux Scheduling // Proceedings of the 28th ACM
-                Symposium on Operating Systems Principles (SOSP 2021). ---
-                New York: ACM, 2021. --- P.~588--604.
-
-                \bibitem{schedext}
-                Corbet~J. The BPF extensible scheduler class
-                [Электронный ресурс] // LWN.net. --- 30.11.2022. ---
-                URL: \url{https://lwn.net/Articles/916291/}
-                (дата обращения: 20.11.2025).
-
-                \bibitem{lwn_schedext_lpc}
-                Corbet~J. Sched\_ext at LPC 2024 [Электронный ресурс] //
-                LWN.net. --- 2024. ---
-                URL: \url{https://lwn.net/Articles/991205/}
-                (дата обращения: 11.09.2025).
-
-                \bibitem{lavd}
-                Galin~M., Hedblom~A. Linux Kernel Scheduler Evaluation for
-                Performance-Critical Telecom Workloads: Master's Thesis. ---
-                Linköping: Linköping University, 2025. --- 74~p.
-
-                \bibitem{sano}
-                Sano~R. A Dynamic Mechanism Design for Scheduling with
-                Different Use Lengths: KIER Discussion Paper No.~924. ---
-                Kyoto: Institute of Economic Research, Kyoto University,
-                2015.
-
-                \bibitem{dln}
-                Dobzinski~S., Lavi~R., Nisan~N. Multi-unit Auctions with
-                Budget Limits // Games and Economic Behavior. --- 2012. ---
-                Vol.~74, No.~2. --- P.~486--503.
-
-        \end{thebibliography}
-\end{frame}
-
 
 \begin{frame}{Extra}
         \scriptsize
@@ -843,5 +771,131 @@
         \end{shadowbox}
 \end{frame}
 \addtocounter{framenumber}{-1}
+
+
+\begin{frame}[allowframebreaks]{Список литературы}
+        \tiny
+        \begin{thebibliography}{99}
+                \setlength{\itemsep}{0.35em}
+
+                \bibitem{lions}
+                Lions~J. A Commentary on the Sixth Edition UNIX Operating
+                System. --- Sydney: The University of New South Wales, 1977.
+
+                \bibitem{kravetz_elss}
+                Kravetz~M., Franke~H., Nagar~S., Ravindran~R. Enhancing
+                Linux Scheduler Scalability // Proceedings of the Ottawa
+                Linux Symposium. --- 2001.
+
+                \bibitem{love}
+                Love~R. Linux Kernel Development. --- 2nd ed. ---
+                Indianapolis: Novell Press, 2005. --- 401~p.
+
+                \bibitem{wong}
+                Wong~C.~S., Tan~I.~K.~T., Kumari~R.~D., Lam~J.~W., Fun~W.
+                Fairness and Interactive Performance of O(1) and CFS
+                Linux Kernel Schedulers // International Symposium on
+                Information Technology (ITSim 2008). ---
+                Kuala Lumpur: IEEE, 2008. --- P.~1--6.
+
+                \bibitem{stoica}
+                Stoica~I., Abdel-Wahab~H. Earliest Eligible Virtual
+                Deadline First: A Flexible and Accurate Mechanism for
+                Proportional Share Resource Allocation: Technical Report
+                TR-95-22. --- Norfolk: Old Dominion University, 1995.
+
+                \bibitem{biglittle}
+                Greenhalgh~P. Big.LITTLE Processing with ARM Cortex-A15 \&
+                Cortex-A7: ARM White Paper. --- Cambridge: ARM Ltd., 2011.
+
+                \bibitem{intelhybrid}
+                Rotem~E. et~al. Alder Lake Architecture // 2021 IEEE Hot
+                Chips 33 Symposium (HCS). --- Palo Alto, CA, USA, 2021. ---
+                P.~1--23. --- DOI:~10.1109/HCS52781.2021.9567097.
+
+                \bibitem{marsellus}
+                Conti~F., Paulin~G., Garofalo~A., Rossi~D., Di~Mauro~A.,
+                Rutishauser~G., Ottavi~G., Eggimann~M., Okuhara~H.,
+                Benini~L. Marsellus: A Heterogeneous RISC-V AI-IoT
+                End-Node SoC with 2-to-8b DNN Acceleration and
+                30\%-Boost Adaptive Body Biasing // IEEE Journal of
+                Solid-State Circuits. --- 2024. --- Vol.~59, No.~1. ---
+                P.~128--142.
+
+                \bibitem{eas}
+                Energy Aware Scheduling [Электронный ресурс] // Linux
+                Kernel Documentation. ---
+                URL: \url{https://www.kernel.org/doc/html/latest/scheduler/sched-energy.html}
+                (дата обращения: 14.11.2025).
+
+                \bibitem{schedext}
+                Corbet~J. The BPF extensible scheduler class
+                [Электронный ресурс] // LWN.net. --- 30.11.2022. ---
+                URL: \url{https://lwn.net/Articles/916291/}
+                (дата обращения: 20.11.2025).
+
+                \bibitem{lwn_schedext_lpc}
+                Corbet~J. Sched\_ext at LPC 2024 [Электронный ресурс] //
+                LWN.net. --- 2024. ---
+                URL: \url{https://lwn.net/Articles/991205/}
+                (дата обращения: 11.09.2025).
+
+                \bibitem{ghost}
+                Humphries~J.~T., Natu~N., Chaugule~A., Weisse~O.,
+                Rhoden~B., Don~J., Rizzo~L., Rombakh~O., Turner~P.,
+                Kozyrakis~C. ghOSt: Fast \& Flexible User-Space Delegation
+                of Linux Scheduling // Proceedings of the 28th ACM
+                Symposium on Operating Systems Principles (SOSP 2021). ---
+                New York: ACM, 2021. --- P.~588--604.
+
+                \bibitem{srand}
+                Tang~Q., Gao~X., Li~G., Lin~J. Optimizing Linux Scheduling
+                Based on Global Runqueue with SCX // IEEE International
+                Conference on Systems, Man, and Cybernetics (SMC 2024). ---
+                IEEE, 2024.
+
+                \bibitem{lace}
+                Xu~J., Wolff~D., Han~X.~Y., Li~J., Roychoudhury~A.
+                Concurrency Testing in the Linux Kernel via eBPF:
+                preprint. --- arXiv, 2025. --- arXiv:2504.21394.
+
+                \bibitem{aegis}
+                Mao~J., Ujcich~B.~E., Ma~S. Rethinking Provenance
+                Completeness with a Learning-Based Linux Scheduler:
+                preprint. --- arXiv, 2025. --- arXiv:2510.08479.
+
+                \bibitem{mos}
+                Wang~X., Jia~S., Huang~Z., Cao~J., Song~M.
+                Mixture-of-Schedulers: An Adaptive Scheduling Agent as a
+                Learned Router for Expert Policies: preprint. --- arXiv,
+                2025. --- arXiv:2511.11628.
+
+                \bibitem{lavd}
+                Galin~M., Hedblom~A. Linux Kernel Scheduler Evaluation
+                for Performance-Critical Telecom Workloads: Master's
+                Thesis. --- Linköping: Linköping University, 2025. ---
+                74~p.
+
+                \bibitem{pie}
+                Van~Craeynest~K., Jaleel~A., Eeckhout~L., Narvaez~P.,
+                Emer~J.~S. Scheduling Heterogeneous Multi-Cores through
+                Performance Impact Estimation (PIE) // Proceedings of the
+                39th Annual International Symposium on Computer
+                Architecture (ISCA 2012). --- New York: ACM, 2012. ---
+                P.~213--224.
+
+                \bibitem{sano}
+                Sano~R. A Dynamic Mechanism Design for Scheduling with
+                Different Use Lengths: KIER Discussion Paper No.~924. ---
+                Kyoto: Institute of Economic Research, Kyoto University,
+                2015.
+
+                \bibitem{dln}
+                Dobzinski~S., Lavi~R., Nisan~N. Multi-unit Auctions with
+                Budget Limits // Games and Economic Behavior. --- 2012. ---
+                Vol.~74, No.~2. --- P.~486--503.
+
+        \end{thebibliography}
+\end{frame}
 
 \end{document}
