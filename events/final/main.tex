@@ -467,7 +467,7 @@
         \begin{columns}[T]
                 \column{0.33\textwidth}
                 \begin{shadowbox2}
-                        \small\textbf{DSQ\_P}
+                        \textbf{DSQ\_P}
 
                         \vspace{0.2em}
                         \footnotesize
@@ -479,7 +479,7 @@
 
                 \column{0.33\textwidth}
                 \begin{shadowbox2}
-                        \small\textbf{DSQ\_E}
+                        \textbf{DSQ\_E}
 
                         \vspace{0.2em}
                         \footnotesize
@@ -492,7 +492,7 @@
 
                 \column{0.33\textwidth}
                 \begin{shadowbox2}
-                        \small\textbf{DSQ\_Starved}
+                        \textbf{DSQ\_Starved}
 
                         \vspace{0.2em}
                         \footnotesize
@@ -537,7 +537,7 @@
         \begin{columns}[T]
                 \column{0.26\textwidth}
                 \begin{shadowbox}
-                        \small\textbf{Система}
+                        \textbf{Система}
 
                         \vspace{0.25em}
                         \footnotesize
@@ -549,7 +549,7 @@
                 \end{shadowbox}
 
                 \begin{shadowbox}
-                        \small\textbf{Сравнение}
+                        \textbf{Сравнение}
 
                         \vspace{0.2em}
                         \footnotesize
@@ -562,7 +562,7 @@
 
                 \column{0.47\textwidth}
                 \begin{shadowbox}
-                        \small\textbf{Бенчмарки}
+                        \textbf{Бенчмарки}
 
                         \vspace{0.12cm}
                         \footnotesize
@@ -586,7 +586,7 @@
 
                 \column{0.26\textwidth}
                 \begin{shadowbox}
-                        \small\textbf{Метрики}
+                        \textbf{Метрики}
 
                         \vspace{0.12cm}
                         \footnotesize
@@ -604,7 +604,7 @@
                 \end{shadowbox}
 
                 \begin{shadowbox}
-                        \small\textbf{Прогоны}
+                        \textbf{Прогоны}
 
                         \vspace{0.12cm}
                         \footnotesize
@@ -652,24 +652,19 @@
 \begin{frame}{Выводы}
         \footnotesize
         \begin{itemize}\setlength{\itemsep}{0.4em}
-                \item \texttt{scx\_A1349} превосходит штатный EEVDF
-                        на hackbench на $4{,}5$\,/\,$8{,}5$\,/\,$1{,}4\,\%$
-                        и лидирует на schbench по средней пропускной
-                        способности при умеренной и стресс-нагрузке
-                        на $51{,}3$\,/\,$55{,}7\,\%$. Задержка p99.9
-                        при стресс-нагрузке $24{,}5$\,мс против
-                        $\approx 1{,}7$\,с у EEVDF
-                \item sysbench единственная нагрузка где
+                \item \textbf{hackbench:} \texttt{scx\_A1349} превосходит
+                        штатный EEVDF на $4{,}5$\,/\,$8{,}5$\,/\,$1{,}4\,\%$
+                \item \textbf{schbench:} лидерство по средней
+                        пропускной способности при умеренной и
+                        стресс-нагрузке на $51{,}3$\,/\,$55{,}7\,\%$.
+                        Задержка p99.9 при стресс-нагрузке
+                        $24{,}5$\,мс против $\approx 1{,}7$\,с у EEVDF
+                \item \textbf{sysbench:} единственная нагрузка где
                         \texttt{scx\_A1349} проигрывает EEVDF
                         ($1{,}6$\,/\,$0{,}8$\,/\,$7{,}4\,\%$).
                         Отстают все \texttt{sched\_ext}-планировщики
                         до $39{,}7\,\%$, причиной могут являться
                         накладные расходы фреймворка
-                \item Разделение вклада отдельных факторов
-                        реализации (аукционный платёж, корзина
-                        токенов, выбор P-ядра, привязанные к ядрам
-                        очереди) выходит за рамки работы и требует
-                        серии экспериментов с поочерёдным отключением
         \end{itemize}
 \end{frame}
 
@@ -710,7 +705,7 @@
 
 \appendix
 
-\begin{frame}{Extra}
+\begin{frame}{Extra. Глоссарий}
         \scriptsize
         \begin{description}
                 \item[EEVDF] Earliest Eligible Virtual Deadline First~--- штатный
@@ -741,7 +736,7 @@
 \end{frame}
 \addtocounter{framenumber}{-1}
 
-\begin{frame}{Extra}
+\begin{frame}{Extra. Пример решения аукциона}
         \textbf{Пример: $K_P = K_E = 1$, одно свободное ядро типа $\kappa$}
 
         \vspace{0.2cm}
@@ -768,6 +763,527 @@
                 большую эффективную ценность ($c_E \lceil l_i\sigma\rceil
                 < c_P l_i$ при $\sigma < c_P/c_E$).
                 Оптимальная стратегия нетривиальна.
+        \end{shadowbox}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. Маппинг модель $\to$ реализация (VCG)}
+        \scriptsize
+        \begin{columns}[T]
+                \begin{column}{0.48\textwidth}
+                        \begin{shadowbox}
+                                \textbf{В модели}\\[2pt]
+                                агент $i$\\
+                                ценность $v_i$\\
+                                длина $l_i$\\
+                                платёж $p_i$\\
+                                аукцион $\arg\max_\kappa \phi_\kappa$\\
+                                контракт $m_\kappa(l_i)$\\
+                                бюджет $B_i^t$
+                        \end{shadowbox}
+                \end{column}
+                \begin{column}{0.48\textwidth}
+                        \begin{shadowbox2}
+                                \textbf{В коде \texttt{scx\_A1349}}\\[2pt]
+                                \texttt{task\_struct} $\to$ \texttt{auction\_task\_ctx}\\
+                                \texttt{p->scx.weight} (\texttt{weight\_cached})\\
+                                \texttt{len\_est\_ns} EWMA\\
+                                \texttt{vcg\_payment()} списывает токены\\
+                                выбор DSQ\_P / DSQ\_E по $\phi$\\
+                                \texttt{contract\_length()}, \texttt{delta\_pow}\\
+                                \texttt{tctx->budget}, \texttt{budget\_max}
+                        \end{shadowbox2}
+                \end{column}
+        \end{columns}
+
+        \vspace{0.25cm}
+        \begin{shadowbox}
+                \footnotesize
+                \textbf{Что если все \texttt{scx.weight} равны?}\\
+                При $v_i = w = \mathrm{const}$ значение выносится из
+                $\arg\max$, решение определяется только длиной через
+                $m_\kappa(l_i)$. Короткие задачи делят $\phi$ и
+                попадают на P в порядке FIFO внутри DSQ. Длинные
+                задачи через возрастание $m_E = \lceil l\sigma \rceil$
+                смещаются на E. Патовой ситуации нет. Стратегический
+                мотив агента сводится к выбору \texttt{nice} /
+                \texttt{cgroup} веса.
+        \end{shadowbox}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. Калибровка $\sigma$, $c_P$, $c_E$ и единицы}
+        \scriptsize
+        \begin{shadowbox}
+                \textbf{$\sigma = \eta_P / \eta_E$ из \texttt{cpu\_capacity}}\\
+                Userspace-часть \texttt{scx\_A1349.c} читает
+                \texttt{/sys/devices/system/cpu/cpuN/cpu\_capacity},
+                $\eta_P = \max_{cpu}$, $\eta_E = \min_{cpu}$, передаёт
+                в BPF через \texttt{global\_data}. На тестовой
+                платформе Core Ultra 7 265K значения ядра:
+                $\eta_P = 1024$, $\eta_E = 800$, отсюда
+                $\sigma \approx 1{,}28$. P-кластер классифицируется
+                по порогу \texttt{P\_CAP\_PCT = 90}.
+        \end{shadowbox}
+
+        \vspace{0.1cm}
+        \begin{shadowbox2}
+                \textbf{$c_P$, $c_E$ физически}\\
+                $c_\kappa$ — удельная стоимость кванта на кластере
+                $\kappa$ в единицах $w$. По умолчанию $c_P = 1024$.
+                Если $c_E$ не задан, выводится $c_E = c_P \cdot
+                \eta_E / \eta_P$, то есть $\gamma = c_P/c_E = \sigma$.
+                Это удерживает $\phi_P \approx \phi_E$ номинально,
+                смещает выбор за счёт $m_E$.
+        \end{shadowbox2}
+
+        \vspace{0.1cm}
+        \begin{shadowbox}
+                \textbf{Единицы}\\
+                $v_i = w_i = $ \texttt{p->scx.weight}, безразмерный,
+                $1$\,\ldots\,$10000$, по умолчанию $100$.\\
+                $l_i$ хранится как \texttt{len\_est\_ns} (нс),
+                в кванты $l_q = \texttt{len\_ns} / \texttt{SLICE\_P}$,
+                \texttt{SLICE\_P} $= 20$\,мс.\\
+                $B_i^{\max} = w_i \cdot \texttt{BUDGET\_MUL}$.
+        \end{shadowbox}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. Накладные расходы sched\_ext на sysbench}
+        \footnotesize
+        \textbf{Контрольный эксперимент.} \texttt{scx\_EEVDF} это тот
+        же алгоритм EEVDF, портированный поверх sched\_ext. Разрыв
+        штатный EEVDF против \texttt{scx\_EEVDF} изолирует накладные
+        расходы фреймворка от логики политики.
+
+        \vspace{0.15cm}
+        \begin{shadowbox}
+                \scriptsize
+                \textbf{sysbench oltp\_read\_only, TPS (выше лучше)}
+                \begin{tabular}{lrr}
+                        Режим & штатный EEVDF & \texttt{scx\_EEVDF} \\
+                        \hline
+                        лёгкий     & 4\,255  & 3\,591  ($-15{,}6$\,\%) \\
+                        умеренный  & 16\,631 & 12\,530 ($-24{,}7$\,\%) \\
+                \end{tabular}
+
+                \vspace{0.15cm}
+                Тот же алгоритм, разная среда исполнения. Разрыв
+                в $664$ и $4101$ TPS это плата за sched\_ext.
+        \end{shadowbox}
+
+        \vspace{0.15cm}
+        \textbf{Чем подтверждается на уровне планировщика}
+        \begin{itemize}\setlength{\itemsep}{0pt}
+                \item рост context switch rate под sysbench
+                \item каждое переключение добавляет вход в
+                        BPF-программу и обновление DSQ
+                \item стоимость pinned-задачи на одно ядро делает
+                        фиксированную стоимость заметной, тогда как
+                        hackbench её амортизирует на массе сообщений
+        \end{itemize}
+
+        \vspace{0.1cm}
+        \texttt{scx\_A1349} отстаёт от штатного на $1{,}6$\,\% и
+        $0{,}8$\,\%, но опережает \texttt{scx\_EEVDF} на $16{,}5$\,\%
+        и $31{,}7$\,\%: учёт гетерогенности компенсирует накладные
+        расходы фреймворка.
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. Сравнение с scx\_LAVD и PIE}
+        \tiny
+        \begin{tabular}{|p{1.7cm}|p{1.9cm}|p{1.9cm}|p{1.9cm}|p{1.7cm}|}
+                \hline
+                Признак & \texttt{scx\_A1349} & \texttt{scx\_LAVD} & PIE & EEVDF \\
+                \hline
+                Что оптимизирует
+                        & благосостояние кластера
+                        & виртуальный дедлайн с поправкой на latency
+                        & пропускная способность гетерогенной системы
+                        & справедливость по vruntime \\
+                \hline
+                Гетерогенность
+                        & явно, через $\sigma$, $m_E(l)=\lceil l\sigma\rceil$
+                        & нет явной модели типа ядра
+                        & да, CPI-стек из аппаратных счётчиков
+                        & нет \\
+                \hline
+                Экон. модель
+                        & VCG-аукцион, бюджеты
+                        & нет
+                        & нет
+                        & нет \\
+                \hline
+                Решение
+                        & MDP, максимум $\phi$ минус платёж
+                        & сортировка по виртуальному дедлайну
+                        & предсказание замедления на альт. ядре
+                        & eligible-задача с минимальным дедлайном \\
+                \hline
+                Ablation
+                        & да, ручки на $\sigma$, бюджеты, $\delta$
+                        & ограниченно
+                        & ---
+                        & --- \\
+                \hline
+        \end{tabular}
+
+        \vspace{0.15cm}
+        \begin{shadowbox2}
+                \scriptsize
+                \textbf{Ключевое отличие.} LAVD оптимизирует одну
+                задачу относительно очереди. PIE предсказывает поведение
+                на альтернативном ядре по счётчикам.
+                \texttt{scx\_A1349} единственный формулирует
+                распределение как механизм со стимулирующей
+                совместимостью на множестве задач и кластеров.
+        \end{shadowbox2}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. Валидация scx\_EEVDF как эталона}
+        \footnotesize
+        \textbf{Зачем.} \texttt{scx\_EEVDF} это эталон накладных
+        расходов sched\_ext. Корректность сравнения зависит от того,
+        насколько точно он воспроизводит штатный EEVDF.
+
+        \vspace{0.1cm}
+        \textbf{Воспроизведено}
+        \begin{itemize}\setlength{\itemsep}{0pt}
+                \item vruntime и eligible deadline
+                \item lifecycle ops sched\_ext (\texttt{enqueue},
+                        \texttt{dispatch}, \texttt{running} и т.д.)
+                \item выбор eligible-задачи с минимальным дедлайном
+        \end{itemize}
+
+        \vspace{0.05cm}
+        \textbf{Нельзя точно сохранить}
+        \begin{itemize}\setlength{\itemsep}{0pt}
+                \item PELT и wakeup affinity (закрытые fair-hooks)
+                \item штатные балансировка и NUMA-миграции
+                \item cgroups bandwidth control (частично)
+        \end{itemize}
+
+        \vspace{0.1cm}
+        \begin{shadowbox}
+                \scriptsize
+                \textbf{Эмпирическая проверка.}
+                CPU-bound (hackbench): штатный $1{,}896$\,с vs
+                \texttt{scx\_EEVDF} $1{,}850$\,с (лёгкая); $9{,}729$
+                vs $8{,}710$ (умеренная). Эквивалентность алгоритма
+                подтверждена.
+
+                \vspace{0.05cm}
+                I/O-bound (sysbench): $4255 \to 3591$ TPS
+                ($-15{,}6$\,\%), $16631 \to 12530$ TPS
+                ($-24{,}7$\,\%). Алгоритм тот же, значит наблюдаемое
+                это стоимость sched\_ext на каждом переключении.
+        \end{shadowbox}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. Механизм выигрыша schbench p99.9}
+        \footnotesize
+        Трасса одного запроса schbench: \texttt{sleep} $\to$
+        \texttt{matrix\_mult} $\to$ \texttt{sleep}. Метрика
+        \textit{request latency} измеряет фазу matmul, она доминирует
+        в хвосте p99.9.
+
+        \vspace{0.3em}
+        \begin{shadowbox2}
+                \textbf{Штатный EEVDF при стрессе.}
+                Фаза matmul конкурирует со всеми CPU-bound задачами
+                за P-ядра единым virtual time. При $Q \gg K_P$
+                лаг отдельных запросов растёт линейно по числу
+                впереди стоящих, в хвосте $\Rightarrow$ p99.9
+                $\approx 1{,}69$\,с.
+        \end{shadowbox2}
+
+        \vspace{0.3em}
+        \begin{shadowbox2}
+                \textbf{\texttt{scx\_A1349}.}
+                Для matmul-фазы $l_i$ велико, $\phi_P(\theta_i) = v_i
+                - c_P l_i$ остаётся выше $\phi_E(\theta_i) = v_i -
+                c_E\lceil l_i\sigma\rceil$, $\arg\max_\kappa
+                \phi_\kappa \to$ \texttt{AUCTION\_DSQ\_P}. Фоновые
+                задачи с малым $v_i$ через тот же argmax уходят в
+                \texttt{AUCTION\_DSQ\_E}. P-кластер обслуживает
+                только matmul-фазы, очередь короткая,
+                p99.9 $= 24{,}5$\,мс.
+        \end{shadowbox2}
+
+        \vspace{0.3em}
+        \begin{shadowbox}
+                \scriptsize
+                \begin{tabular}{l|l}
+                        EEVDF & \texttt{P:[mm|mm|bg|bg|mm|bg|\ldots]} один поток vtime\\
+                        A1349 & \texttt{P:[mm|mm|mm]\quad E:[bg|bg|bg]} разделение по $\phi$
+                \end{tabular}
+        \end{shadowbox}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. \texttt{DSQ\_STARVED} и защита от голодания}
+        \scriptsize
+        \texttt{AUCTION\_DSQ\_STARVED} (id $= 3$) — очередь задач, не
+        прошедших аукцион ($p_i > B_i^t$). Низкий приоритет,
+        обслуживается после \texttt{DSQ\_P} и \texttt{DSQ\_E}.
+
+        \vspace{0.2em}
+        \begin{shadowbox2}
+                \textbf{Пополнение бюджета.}
+                За время сна $\Delta t$:
+                $\Delta B = \min(\Delta t, \text{IDLE\_CAP}) \cdot w_i /
+                \text{REPLENISH\_DIV}$, до потолка $B_i^{\max} = w_i
+                \cdot \text{BUDGET\_MUL}$. Задача в \texttt{STARVED}
+                накапливает бюджет до победы в следующем аукционе.
+        \end{shadowbox2}
+
+        \vspace{0.2em}
+        \begin{shadowbox2}
+                \textbf{Гарантия прогресса.}
+                \texttt{STARVED} обслуживается FIFO по $\phi$-vtime,
+                eventual progress даже при пустом бюджете. Голодание
+                невозможно: либо победа после пополнения, либо
+                обслуживание при простое P/E-кластеров.
+        \end{shadowbox2}
+
+        \vspace{0.2em}
+        \begin{shadowbox}
+                \textbf{Инверсия приоритета.}
+                Отдельный PI-обработчик в BPF не реализован. Защита
+                наследуется от ядерного futex PI через \texttt{rt\_mutex},
+                sched\_ext видит повышенный \texttt{p->prio} и
+                пересчитывает $w_i$ при следующем \texttt{enqueue}.
+        \end{shadowbox}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. Кэш-локальность, миграция и перегрузка P}
+        \scriptsize
+        \begin{shadowbox2}
+                \textbf{Кэш-локальность в \texttt{select\_cpu}.}
+                Быстрый путь: \texttt{prev\_cpu} без сканирования, если
+                простаивает в нужном кластере. Полный путь:
+                \texttt{bpf\_for} ищет свободное P-ядро. Длинные
+                задачи ($l \geq \text{SLICE\_P}$) уходят в per-CPU
+                sticky DSQ \texttt{PERCPU\_BASE}+cpu, сохраняя L1/L2.
+        \end{shadowbox2}
+
+        \vspace{0.2em}
+        \begin{shadowbox2}
+                \textbf{Стоимость миграции.}
+                Явного члена нет, входит косвенно через $\sigma$:
+                перенос $P\to E$ удлиняет контракт до $\lceil
+                l_i\sigma\rceil$, снижает $\phi_E$ и штрафует
+                миграцию для крупных $l_i$.
+        \end{shadowbox2}
+
+        \vspace{0.2em}
+        \begin{shadowbox}
+                \textbf{Перегрузка P-кластера:}
+                $Q_P \geq K_P$ и $Q_P \cdot K_E > Q_E \cdot K_P$.
+                Эквивалентно $Q_P/K_P > Q_E/K_E$ — нормированная
+                глубина очереди P выше E. Перекрёстное умножение
+                вместо деления убирает 64-битный \texttt{div} на
+                быстром пути.
+
+                \vspace{0.15em}
+                Активируется для коротких задач ($\hat l_{\text{ns}}
+                < \text{SLICE\_P}$): даже с $\sigma$-замедлением
+                $c_E\lceil l_i\sigma\rceil$ меньше ожидания в очереди
+                P. Trade-off: throughput при перегрузке vs строгая
+                P-affinity.
+        \end{shadowbox}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. Контроль условий эксперимента}
+        \footnotesize
+        \begin{columns}[T]
+                \column{0.5\textwidth}
+                \begin{shadowbox}
+                        \textbf{Платформа}
+
+                        \scriptsize
+                        Intel Core Ultra 7 265K (Arrow Lake-S),\\
+                        8P (Lion Cove) $+$ 12E (Skymont), без SMT,\\
+                        20 аппаратных потоков\\[0.15em]
+                        32 ГБ DDR5 6000 МГц, TDP 125 / 250 Вт\\[0.15em]
+                        Arch Linux, ядро Linux 7.0
+                \end{shadowbox}
+
+                \begin{shadowbox}
+                        \textbf{Управление частотой и питанием}
+
+                        \scriptsize
+                        Регулятор \texttt{powersave} поверх
+                        \texttt{intel\_pstate}, HWP активен, EPP
+                        по умолчанию\\[0.15em]
+                        Turbo Boost включён\\[0.15em]
+                        C-states включены\\[0.15em]
+                        Микрокод 0x121
+                \end{shadowbox}
+
+                \column{0.5\textwidth}
+                \begin{shadowbox2}
+                        \textbf{Снижение шума измерений}
+
+                        \scriptsize
+                        Перед каждым запуском пауза 30 с для сброса
+                        частот и термического состояния\\[0.15em]
+                        Первые 5 с каждой фазы отбрасываются как
+                        разогрев\\[0.15em]
+                        Случайная перестановка порядка планировщиков
+                        на каждой итерации\\[0.15em]
+                        Десктопное окружение и фоновые сервисы
+                        зафиксированы между запусками
+                \end{shadowbox2}
+
+                \begin{shadowbox2}
+                        \textbf{Границы выводов}
+
+                        \scriptsize
+                        Количественные значения привязаны к данной
+                        конфигурации\\[0.15em]
+                        При смене регулятора, отключении Turbo, иной
+                        пропорции P/E или включённом SMT ожидается
+                        сохранение качественного паттерна
+                        (преимущество на schbench p99/p99.9), но
+                        абсолютные числа изменятся
+                \end{shadowbox2}
+        \end{columns}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. Статистика, $N=6$, доверительные интервалы}
+        \footnotesize
+        \begin{columns}[T]
+                \column{0.5\textwidth}
+                \begin{shadowbox}
+                        \textbf{Дизайн выборки}
+
+                        \scriptsize
+                        $N = 6$ независимых запусков на пару
+                        (уровень, планировщик)\\[0.15em]
+                        4 планировщика, 3 уровня нагрузки, $4 \cdot
+                        3 \cdot 6 = 72$ полных запуска\\[0.15em]
+                        Случайная перестановка порядка планировщиков,
+                        межзапусковые паузы по 30 с
+                \end{shadowbox}
+
+                \begin{shadowbox}
+                        \textbf{Доверительные интервалы}
+
+                        \scriptsize
+                        95\% интервал по $t$-распределению Стьюдента,
+                        $\mathrm{df} = N - 1 = 5$\\[0.15em]
+                        Реализация
+                        \texttt{scipy.stats.t.interval}\\[0.15em]
+                        Bootstrap сознательно не используется: при
+                        $N = 6$ ресэмплинг лишь перетасовывает
+                        имеющиеся значения и даёт занижено узкий
+                        интервал
+                \end{shadowbox}
+
+                \column{0.5\textwidth}
+                \begin{shadowbox2}
+                        \textbf{Почему $N=6$ достаточно}
+
+                        \scriptsize
+                        Системный бенчмарк, не A/B на людях:
+                        коэффициент вариации $\mathrm{CV} = \sigma /
+                        \mu$ мал ($\approx 0{,}2$ - $2\%$ по
+                        большинству метрик)\\[0.15em]
+                        Полуширины 95\% интервалов укладываются в
+                        единицы процентов от среднего\\[0.15em]
+                        Опора на ЦПТ для выборочного среднего, не
+                        на нормальность сырых наблюдений
+                \end{shadowbox2}
+
+                \begin{shadowbox2}
+                        \textbf{Размер эффекта vs шум}
+
+                        \scriptsize
+                        scx\_A1349 vs EEVDF на стрессе:\\
+                        schbench RPS $+51\%$, p99.9 wakeup $\approx
+                        70\times$ ниже\\[0.15em]
+                        Эффект на порядки больше выборочного
+                        $\sigma$, интервалы разнесены без
+                        перекрытия\\[0.15em]
+                        Шапиро-Уилка при $N = 6$ малоинформативен,
+                        вместо него опора на размер эффекта и
+                        $t$-интервал
+                \end{shadowbox2}
+        \end{columns}
+\end{frame}
+\addtocounter{framenumber}{-1}
+
+
+\begin{frame}{Extra. Ограничения eBPF verifier}
+        \footnotesize
+        \begin{columns}[T]
+                \column{0.5\textwidth}
+                \begin{shadowbox}
+                        \textbf{Ограничения BPF verifier}
+
+                        \scriptsize
+                        Циклы только с доказуемой границей
+                        (\texttt{bpf\_loop}, \texttt{bpf\_for},
+                        развёртка на этапе компиляции)\\[0.15em]
+                        Рекурсия запрещена\\[0.15em]
+                        Стек программы ограничен 512 байтами\\[0.15em]
+                        Лимит инструкций после JIT (порядка
+                        $10^6$)\\[0.15em]
+                        Динамическая память общего назначения
+                        недоступна, состояние только через BPF
+                        maps\\[0.15em]
+                        Арифметика с плавающей точкой запрещена
+                \end{shadowbox}
+
+                \column{0.5\textwidth}
+                \begin{shadowbox2}
+                        \textbf{Как алгоритм укладывается в эти границы}
+
+                        \scriptsize
+                        $\arg\max_\kappa \phi_\kappa$ берётся по двум
+                        кластерам $\{P, E\}$ (две ветви), не по
+                        $\mathcal{N}^t$\\[0.15em]
+                        $\bar W_\kappa$ как EWMA реализованного
+                        $\phi_\kappa$, а не точный counterfactual
+                        $W_{-i}$: точный VCG-расчёт за $O(N^2)$
+                        несовместим с лимитом инструкций\\[0.15em]
+                        $l_i$ оценивается через EWMA
+                        \texttt{len\_est\_ns}\\[0.15em]
+                        Состояние задач в
+                        \texttt{BPF\_MAP\_TYPE\_TASK\_STORAGE},
+                        табличные данные в
+                        \texttt{BPF\_MAP\_TYPE\_ARRAY}\\[0.15em]
+                        Бюджет, $\phi$ и платежи в фиксированной
+                        целой арифметике: \texttt{PHI\_BIAS} $= 2^{62}$,
+                        \texttt{DELTA\_SCALE} $= 2^{20}$
+                \end{shadowbox2}
+        \end{columns}
+
+        \vspace{0.15cm}
+        \begin{shadowbox}
+                \scriptsize
+                Это не дефекты реализации, а проектные ограничения
+                eBPF. Математическая модель сохраняет VCG-структуру
+                и инвариант бюджета, упрощения относятся к оценке
+                $W_{-i}$ и $l_i$.
         \end{shadowbox}
 \end{frame}
 \addtocounter{framenumber}{-1}
