@@ -41,6 +41,9 @@ $(OBJ_DIR)/%.bpf.o: $(SRC_DIR)/%.bpf.c
 	@mkdir -p $(dir $@)
 	$(BPF_CLANG) $(BPF_CFLAGS) -target bpf $(BPF_INCLUDES) -c $< -o $@
 
+# Header shared by the BPF program and its loader.
+$(OBJ_DIR)/scx_A1349.bpf.o $(OBJ_DIR)/scx_A1349: $(SRC_DIR)/scx_A1349.h
+
 install: $(ALL_SCHEDS)
 	@echo "Installing schedulers to $(INSTALL_DIR)"
 	@mkdir -p $(INSTALL_DIR)
