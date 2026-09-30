@@ -527,6 +527,19 @@ account_run(struct task_struct *p, struct auction_task_ctx *tctx,
 }
 
 /*
+ * True for CPUs the loader classified: it only writes cpu_capacity for CPUs
+ * online at attach (hotplug restarts the scheduler with fresh maps), so a
+ * zero entry is an offline or absent CPU whose cpu_is_p would read as E.
+ */
+static __always_inline bool
+cpu_known(u32 cpu)
+{
+	u32 *cap = bpf_map_lookup_elem(&cpu_capacity, &cpu);
+
+	return cap && *cap;
+}
+
+/*
  * Clusters @p may run on: bit 0 = P, bit 1 = E.  Unrestricted tasks are
  * the common case and skip the scan; per-CPU tasks resolve in O(1).
  */
@@ -542,18 +555,36 @@ task_clusters(struct task_struct *p)
 	if (p->nr_cpus_allowed >= (int)scx_bpf_nr_cpu_ids())
 		return CLUSTER_P | CLUSTER_E;
 
-	if (p->nr_cpus_allowed == 1)
-		return cpu_is_p_type(bpf_cpumask_first(p->cpus_ptr)) ?
-		       CLUSTER_P : CLUSTER_E;
+	if (p->nr_cpus_allowed == 1) {
+		u32 only = bpf_cpumask_first(p->cpus_ptr);
+
+		if (!cpu_known(only))
+			return CLUSTER_P | CLUSTER_E;
+		return cpu_is_p_type(only) ? CLUSTER_P : CLUSTER_E;
+	}
 
 	bpf_for(c, 0, AUCTION_NCPU_MAX) {
-		if (!bpf_cpumask_test_cpu(c, p->cpus_ptr))
+		if (!bpf_cpumask_test_cpu(c, p->cpus_ptr) || !cpu_known((u32)c))
 			continue;
 		mask |= cpu_is_p_type((u32)c) ? CLUSTER_P : CLUSTER_E;
 		if (mask == (CLUSTER_P | CLUSTER_E))
 			break;
 	}
 	return mask ?: CLUSTER_P | CLUSTER_E;
+}
+
+/*
+ * A task just moved to STARVED: make sure a CPU that may run it looks at
+ * STARVED soon, rather than waiting for one of its CPUs to dispatch for
+ * some other reason (a pinned task's only CPU may be idle).
+ */
+static __always_inline void
+kick_for(struct task_struct *p)
+{
+	s32 cpu = scx_bpf_pick_idle_cpu(p->cpus_ptr, 0);
+
+	if (cpu >= 0)
+		scx_bpf_kick_cpu(cpu, SCX_KICK_IDLE);
 }
 
 /* ── sched_ext ops ───────────────────────────────────────────────────────── */
@@ -721,6 +752,9 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 	if (is_wakeup) {
 		s32 prev_cpu = tctx->wake_prev_cpu;
 		tctx->wake_prev_cpu = -1;
+		/* select_task_rq() skips ops.select_cpu for single-CPU tasks. */
+		if (prev_cpu < 0 && p->nr_cpus_allowed == 1)
+			prev_cpu = scx_bpf_task_cpu(p);
 		if (prev_cpu >= 0) {
 			bool prev_is_p = cpu_is_p_type((u32)prev_cpu);
 			bool cluster_match = on_p ? prev_is_p : !prev_is_p;
@@ -868,8 +902,10 @@ auction_try_round(u64 src_dsq, u64 w_bar, s32 cpu)
 		 * auction_dispatch() relies on.
 		 */
 		scx_bpf_dsq_move_set_vtime(&it, bpf_ktime_get_ns());
-		if (scx_bpf_dsq_move_vtime(&it, p_top, AUCTION_DSQ_STARVED, 0))
+		if (scx_bpf_dsq_move_vtime(&it, p_top, AUCTION_DSQ_STARVED, 0)) {
 			stat_inc(STAT_EXILE);
+			kick_for(p_top);
+		}
 	}
 
 out:
@@ -879,7 +915,9 @@ out:
 
 /*
  * True once the head of STARVED has waited longer than STARVED_MAX_WAIT_NS.
- * STARVED is ordered by exile time, so the head's vtime is its exile stamp.
+ * STARVED is ordered by exile time, so the head's vtime is its exile stamp,
+ * and if the head has not expired nothing behind it has.  Lockless peek:
+ * cheap enough for every dispatch.
  */
 static __always_inline bool
 starved_head_expired(u64 now)
@@ -891,6 +929,34 @@ starved_head_expired(u64 now)
 		return false;
 	since = p->scx.dsq_vtime;
 	return now > since && now - since > STARVED_MAX_WAIT_NS;
+}
+
+/*
+ * Serve the oldest STARVED task this CPU may run, if it has itself waited
+ * longer than STARVED_MAX_WAIT_NS.  The expired head may be pinned
+ * elsewhere; move_to_local() would then hand this CPU the first runnable
+ * task behind it whether or not that one had expired.
+ */
+static __always_inline bool
+serve_expired_starved(s32 cpu, u64 now)
+{
+	struct task_struct *p;
+	bool served = false;
+
+	if (!starved_head_expired(now))
+		return false;
+
+	bpf_for_each(scx_dsq, p, AUCTION_DSQ_STARVED, 0) {
+		u64 since = p->scx.dsq_vtime;
+
+		if (!bpf_cpumask_test_cpu(cpu, p->cpus_ptr))
+			continue;
+		if (now > since && now - since > STARVED_MAX_WAIT_NS)
+			served = scx_bpf_dsq_move(BPF_FOR_EACH_ITER, p,
+						  SCX_DSQ_LOCAL, 0);
+		break;
+	}
+	return served;
 }
 
 /*
@@ -914,8 +980,10 @@ demote_expired(u64 dsq_id, u64 now)
 			continue;
 		scx_bpf_dsq_move_set_vtime(BPF_FOR_EACH_ITER, at);
 		if (scx_bpf_dsq_move_vtime(BPF_FOR_EACH_ITER, p,
-					   AUCTION_DSQ_STARVED, 0))
+					   AUCTION_DSQ_STARVED, 0)) {
 			stat_inc(STAT_DEMOTE);
+			kick_for(p);
+		}
 	}
 }
 
@@ -1033,8 +1101,7 @@ BPF_STRUCT_OPS(auction_dispatch, s32 cpu, struct task_struct *prev)
 		u64 now = bpf_ktime_get_ns();
 
 		age_cluster_dsqs(now);
-		if (starved_head_expired(now) &&
-		    scx_bpf_dsq_move_to_local(AUCTION_DSQ_STARVED, 0)) {
+		if (serve_expired_starved(cpu, now)) {
 			stat_inc(STAT_STARVED_AGED);
 			return;
 		}
@@ -1068,6 +1135,15 @@ BPF_STRUCT_OPS(auction_dispatch, s32 cpu, struct task_struct *prev)
 				if (auction_try_round(self_dsq, w_bar_self, cpu))
 					return;
 			}
+			/*
+			 * Every round was spent on redirects or exiles.  Do not
+			 * leave this CPU idle while its own cluster still has a
+			 * task it may run (e.g. one pinned here, queued behind
+			 * tasks pinned elsewhere): take the best such task.
+			 */
+			if (scx_bpf_dsq_nr_queued(self_dsq) &&
+			    scx_bpf_dsq_move_to_local(self_dsq, 0))
+				return;
 		}
 	}
 
