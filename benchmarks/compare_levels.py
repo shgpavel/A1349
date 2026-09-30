@@ -121,8 +121,33 @@ def scheds_present(aggs):
     return [x for x in SCHED_ORDER if x in s] + sorted(s - set(SCHED_ORDER))
 
 
+def _run_skip_reason(meta_path):
+    """Mirror aggregate.run_skip_reason: why the run described by meta_path
+    must not be used (sched_ext_ok False / complete False), or None. Missing
+    or older metas without these keys are accepted."""
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    if meta.get("sched_ext_ok") is False:
+        return (f"sched_ext check failed at {meta.get('sched_ext_failed_at')!r}: "
+                f"{meta.get('sched_ext_error')}")
+    if meta.get("complete") is False:
+        if meta.get("interrupted"):
+            return f"incomplete run (interrupted by {meta['interrupted']})"
+        return "incomplete run (collect.py did not finish)"
+    return None
+
+
 def _load_run_frames(level_dir, sched):
-    """Return cached list of raw per-run DataFrames (workload phases only)."""
+    """Return cached list of raw per-run DataFrames (workload phases only).
+
+    Per run dir, the newest CSV its meta.json doesn't mark bad — the same
+    run aggregate.py picked for <sched>_aggregate.csv.
+    """
     key = (str(level_dir), sched)
     if key in _RUN_CACHE:
         return _RUN_CACHE[key]
@@ -132,11 +157,17 @@ def _load_run_frames(level_dir, sched):
         sched_dir = run_dir / sched
         if not sched_dir.is_dir():
             continue
-        csvs = sorted(sched_dir.glob("*.csv"))
-        if not csvs:
+        csv_path = None
+        for c in sorted(sched_dir.glob("*.csv"), reverse=True):
+            why = _run_skip_reason(c.parent / (c.stem + ".meta.json"))
+            if why is None:
+                csv_path = c
+                break
+            print(f"  WARN: skipping {c}: {why}", file=sys.stderr)
+        if csv_path is None:
             continue
         try:
-            df = pd.read_csv(csvs[-1])
+            df = pd.read_csv(csv_path)
         except Exception:
             continue
         if "phase" in df.columns:

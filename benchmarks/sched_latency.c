@@ -5,7 +5,7 @@
  * avg and p99 statistics for:
  *   - Schedule delay     (wakeup → running)
  *   - Runqueue latency   (enqueue → running)
- *   - Wakeup latency     (wakeup → enqueue)
+ *   - Wakeup latency     (sched_waking → enqueue)
  *   - Preemption latency (preempted → re-running)
  *   - Idle wakeup        (CPU idle → CPU running real task)
  *   - Migration latency  (runqueue lat for tasks that migrated CPUs)
@@ -29,7 +29,8 @@
 
 #include "sched_latency.bpf.skel.h"
 
-#define HIST_BUCKETS  32
+#define HIST_BUCKETS  32	/* log2: b=[2^b, 2^(b+1)) ns, 0=[0,2), last=[2^31, inf) */
+#define HIST_LAST     (HIST_BUCKETS - 1)
 #define NR_LAT_TYPES  8
 
 static const char *lat_names[NR_LAT_TYPES] = {
@@ -149,7 +150,9 @@ read_csw(int map_fd, struct csw_counters *out, int nr_cpus)
  * BPF-side min/max are cumulative-since-boot and cannot be delta-subtracted,
  * so approximate per-interval min/max from the delta bucket distribution:
  * min ≈ lower bound of lowest nonzero delta bucket, max ≈ upper bound of
- * highest. Coarse (log2 buckets) but honest per-interval.
+ * highest. Coarse (log2 buckets) but honest per-interval. The last bucket
+ * is open-ended; its best upper bound is the cumulative max, which is exact
+ * whenever this interval set it.
  */
 static void
 hist_delta(const struct hist *curr, struct hist *prev, struct hist *out)
@@ -175,7 +178,13 @@ hist_delta(const struct hist *curr, struct hist *prev, struct hist *out)
 		}
 	}
 	out->min_ns = (lo_b < 0) ? 0 : ((lo_b == 0) ? 0 : (1ULL << lo_b));
-	out->max_ns = (hi_b < 0) ? 0 : (1ULL << (hi_b + 1));
+	if (hi_b < 0)
+		out->max_ns = 0;
+	else if (hi_b < HIST_LAST)
+		out->max_ns = 1ULL << (hi_b + 1);
+	else	/* >= 2^31 guards a torn read: bucket bumped, max not yet */
+		out->max_ns = curr->max_ns > (1ULL << HIST_LAST)
+			? curr->max_ns : (1ULL << HIST_LAST);
 	*prev = *curr;
 }
 
@@ -196,6 +205,8 @@ csw_delta(const struct csw_counters *curr, struct csw_counters *prev,
 /*
  * Estimate a percentile from a log2 histogram via linear interpolation
  * within the containing bucket (assumes uniform distribution in bucket).
+ * The last bucket is open-ended: a percentile landing there is reported as
+ * its lower bound, 2^31 ns (the true value is at least that).
  */
 static __u64
 hist_percentile(struct hist *h, double pct)
@@ -213,6 +224,8 @@ hist_percentile(struct hist *h, double pct)
 
 		if (cumul + bkt >= target) {
 			__u64 lo = (b == 0) ? 0 : (1ULL << b);
+			if (b == HIST_LAST)
+				return lo;
 			__u64 hi = 1ULL << (b + 1);
 			double frac = (target - cumul) / (double)bkt;
 			if (frac < 0)
@@ -224,7 +237,8 @@ hist_percentile(struct hist *h, double pct)
 		cumul += bkt;
 	}
 
-	return 1ULL << HIST_BUCKETS;
+	/* Buckets sum below count (torn read): past every sample. */
+	return h->max_ns;
 }
 
 static const char *
@@ -353,10 +367,12 @@ print_histogram(struct hist *h, const char *name)
 
 		char lo[32], hi[32];
 		__u64 lo_ns = (b == 0) ? 0 : 1ULL << b;
-		__u64 hi_ns = 1ULL << (b + 1);
 
 		fmt_ns(lo_ns, lo, sizeof(lo));
-		fmt_ns(hi_ns, hi, sizeof(hi));
+		if (b == HIST_LAST)	/* open-ended */
+			snprintf(hi, sizeof(hi), "inf");
+		else
+			fmt_ns(1ULL << (b + 1), hi, sizeof(hi));
 
 		int bar_len = (int)(h->bucket[b] * 40 / max_val);
 		if (bar_len == 0 && h->bucket[b] > 0)

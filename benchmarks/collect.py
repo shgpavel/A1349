@@ -8,7 +8,7 @@ scheduler binary and the sched_latency BPF tool) are spawned under sudo.
 
 Usage:
     python3 collect.py --scheduler default --duration 300 --interval 1 --output results/
-    python3 collect.py --scheduler scx_EEVDF --sched-bin ../impl/scx_EEVDF/build/scheds/c/scx_eevdf --duration 300
+    python3 collect.py --scheduler scx_EEVDF --sched-bin ../impl/scx_EEVDF/build/scheds/c/scx_eevdf --sched-ops eevdf --duration 300
     python3 collect.py --probe
 """
 
@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -46,7 +47,7 @@ CSV_COLUMNS = [
     "cpu_util_pct",
     "ctx_switches_per_sec",
     "nr_running",
-    # /proc/schedstat
+    # /proc/schedstat (pcount, run_delay)
     "timeslices_per_sec",
     "wait_ns_per_sec",
     # RAPL power
@@ -171,7 +172,8 @@ class ProcStatSource:
 
 
 class SchedstatSource:
-    """Reads timeslices and wait time from /proc/schedstat."""
+    """Reads timeslice count (pcount) and runqueue wait time (run_delay)
+    from /proc/schedstat."""
 
     def __init__(self):
         self.prev = None
@@ -198,10 +200,14 @@ class SchedstatSource:
         for line in lines:
             if line.startswith("cpu"):
                 parts = line.split()
-                if len(parts) >= 9:
-                    # field 8 = timeslices, field 7 = time spent waiting
-                    total_slices += int(parts[8])
-                    total_wait += int(parts[7])
+                # "cpuN yld_count 0 sched_count sched_goidle ttwu_count
+                #  ttwu_local rq_cpu_time run_delay pcount [...]"
+                if len(parts) >= 10:
+                    # parts[9] = pcount (# timeslices run on this cpu),
+                    # parts[8] = run_delay (ns tasks spent waiting on the rq).
+                    # parts[7] = rq_cpu_time (ns on CPU) is not used.
+                    total_slices += int(parts[9])
+                    total_wait += int(parts[8])
 
         if self.prev is not None and self.prev_time is not None:
             dt = now - self.prev_time
@@ -744,6 +750,109 @@ def _kill_proc_tree(proc, timeout=5):
 
 
 # ---------------------------------------------------------------------------
+# sched_ext state: which scheduler is the kernel actually running?
+# ---------------------------------------------------------------------------
+
+SCHED_EXT_SYSFS = Path("/sys/kernel/sched_ext")
+SCHED_EXT_POLL = 0.2              # sysfs poll period (s)
+SCHED_EXT_ATTACH_TIMEOUT = 10.0   # max wait for ops to attach / state to settle (s)
+
+
+class SchedExtError(RuntimeError):
+    """Attached sched_ext scheduler no longer matches this run's label."""
+
+    def __init__(self, phase, error):
+        super().__init__(f"{phase}: {error}")
+        self.phase = phase
+        self.error = error
+
+
+def read_sched_ext_state():
+    """Snapshot /sys/kernel/sched_ext (world-readable, no sudo needed).
+
+    state:      enabled | disabled | enabling | disabling, or 'unsupported'
+                when the kernel has no sched_ext at all.
+    ops:        attached sched_ext_ops .name (root/ops), None when detached.
+    enable_seq: count of successful scheduler enables since boot, None if
+                the kernel doesn't expose it. A change between two checks
+                means the scheduler was ejected and re-attached in between
+                (e.g. a loader restart loop after hotplug).
+    """
+    if not SCHED_EXT_SYSFS.is_dir():
+        return {"state": "unsupported", "ops": None, "enable_seq": None}
+
+    def _read(rel):
+        try:
+            return (SCHED_EXT_SYSFS / rel).read_text().strip() or None
+        except OSError:
+            return None
+
+    seq = _read("enable_seq")
+    return {
+        "state": _read("state") or "unknown",
+        "ops": _read("root/ops"),
+        "enable_seq": int(seq) if seq and seq.isdigit() else None,
+    }
+
+
+def wait_sched_ext_settled(timeout=SCHED_EXT_ATTACH_TIMEOUT):
+    """Return sched_ext state once it leaves enabling/disabling (or timeout).
+
+    A scheduler stopped by the previous run may still be tearing down."""
+    deadline = time.monotonic() + timeout
+    while True:
+        st = read_sched_ext_state()
+        if st["state"] not in ("enabling", "disabling") or time.monotonic() > deadline:
+            return st
+        time.sleep(SCHED_EXT_POLL)
+
+
+def sched_ext_ops_match(ops, expect_ops):
+    """True if root/ops `ops` is the scheduler named `expect_ops`.
+
+    C schedulers attach under their bare ops name. Rust ones (scx_utils
+    scx_ops_open!) append "_<version>[_g<sha>]_<target triple>", with chars
+    outside [A-Za-z0-9._] replaced by '_' — scx_lavd attaches as e.g.
+    "lavd_1.0.13_g1a2b3c4_x86_64_unknown_linux_gnu" — so accept `expect_ops`
+    followed by a '_'-separated suffix too.
+    """
+    return ops is not None and (ops == expect_ops or ops.startswith(expect_ops + "_"))
+
+
+def sched_ext_mismatch(st, expect_scx, expect_ops=None, enable_seq=None):
+    """Return why `st` doesn't match the run's label, or None if it does.
+
+    expect_scx: a sched_ext scheduler must be attached (else: none may be).
+    expect_ops: required root/ops name (see sched_ext_ops_match); None
+                accepts any attached ops.
+    enable_seq: enable_seq seen when the run started; None skips the check.
+    """
+    state, ops = st["state"], st["ops"]
+    if expect_scx:
+        if state != "enabled":
+            return f"sched_ext state is '{state}' (expected 'enabled'), root/ops={ops!r}"
+        if expect_ops is not None and not sched_ext_ops_match(ops, expect_ops):
+            return f"sched_ext root/ops is {ops!r} (expected {expect_ops!r}[_<suffix>])"
+    elif state not in ("disabled", "unsupported"):
+        return (f"sched_ext scheduler root/ops={ops!r} is attached (state '{state}') "
+                f"but this run is labelled as the default scheduler")
+    if (enable_seq is not None and st["enable_seq"] is not None
+            and st["enable_seq"] != enable_seq):
+        return (f"sched_ext enable_seq changed {enable_seq} -> {st['enable_seq']}: "
+                f"a scheduler was (re-)attached since the run started")
+    return None
+
+
+def log_tail(path, n=20):
+    """Last `n` lines of a log file ('' if unreadable)."""
+    try:
+        with open(path, errors="replace") as f:
+            return "".join(deque(f, maxlen=n))
+    except OSError:
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # Probe mode
 # ---------------------------------------------------------------------------
 
@@ -784,6 +893,9 @@ def run_probe(args):
             print(f"  {'enqueue hooks':30s} UNKNOWN (cannot read)")
     else:
         print(f"  {'enqueue hooks':30s} UNKNOWN (no debugfs)")
+
+    st = read_sched_ext_state()
+    print(f"  {'sched_ext':30s} state={st['state']} ops={st['ops'] or '-'}")
 
 
 # ---------------------------------------------------------------------------
@@ -836,85 +948,49 @@ def collect(args):
         if not sysbench.prep(log_dir=output_dir):
             print("sysbench prep failed; OLTP phase will be skipped", file=sys.stderr)
 
-    # Manage sched_ext scheduler subprocess (needs root).
-    sched_proc = None
-    sched_log_fh = None
-    if args.sched_bin:
-        print(f"Starting scheduler: {args.sched_bin}")
-        sched_log_fh = open(output_dir / "scheduler.log", "w")
-        try:
-            sched_proc = subprocess.Popen(
-                [*sudo_prefix(), args.sched_bin],
-                stdout=sched_log_fh,
-                stderr=sched_log_fh,
-                start_new_session=True,
-            )
-            time.sleep(2)  # Let scheduler attach
-        except OSError as e:
-            print(f"Failed to start scheduler: {e}", file=sys.stderr)
-            sched_log_fh.close()
-            return 1
+    # Rows are labelled `scheduler`, so check in sysfs which scheduler the
+    # kernel actually runs: here before start, after attach, and around every
+    # phase (check_sched_ext below). expect_ops=None accepts any ops name.
+    expect_scx = bool(args.sched_bin)
+    expect_ops = getattr(args, "sched_ops", None)
+    sched_log_path = output_dir / "scheduler.log"
 
-        # Verify scheduler is still alive — sudo failure, missing binary, or
-        # attach failure would exit the process before we start sampling.
-        rc = sched_proc.poll()
-        if rc is not None:
-            print(f"Scheduler exited with code {rc} before attach; "
-                  f"see {output_dir / 'scheduler.log'}", file=sys.stderr)
-            sched_log_fh.close()
-            return 1
+    # Nothing may be attached yet: a default run would measure a leftover
+    # scheduler, and an scx run would fail to attach — or, if the leftover
+    # has the same ops name, pass the attach check below while measuring it.
+    sched_ext_start = wait_sched_ext_settled()
+    if sched_ext_start["state"] not in ("disabled", "unsupported"):
+        print(f"sched_ext scheduler root/ops={sched_ext_start['ops']!r} is still "
+              f"attached (state '{sched_ext_start['state']}'), probably leaked by a "
+              f"previous run; stop it before measuring '{scheduler}'", file=sys.stderr)
+        return 1
+    if expect_scx and sched_ext_start["state"] == "unsupported":
+        print(f"Kernel has no sched_ext ({SCHED_EXT_SYSFS} missing); "
+              f"cannot run {args.sched_bin}", file=sys.stderr)
+        return 1
 
-    # Start BPF latency tool
-    sched_lat.start(interval)
-
-    # Priming read (for delta-based sources)
-    proc_stat.read(interval)
-    schedstat.read(interval)
-    rapl.read(interval)
-
-    # Write metadata (oneshot results filled in after phases run)
-    meta = {
-        "scheduler": scheduler,
-        "workload_level": level,
-        "hackbench_args": hb_args,
-        "sysbench_threads": sb_threads,
-        "sysbench_duration": sysbench_dur,
-        "schbench_duration": schbench_dur,
-        "phase_repeats": repeats,
-        "phase_cooldown": cooldown,
-        "start_time": datetime.now().isoformat(),
-        "interval": interval,
-        "warmup": warmup,
-        "hostname": os.uname().nodename,
-        "cpu_count": os.cpu_count(),
-        "sources": {
-            "/proc/stat": proc_stat.available(),
-            "/proc/schedstat": schedstat.available(),
-            "RAPL": rapl.available(),
-            "sched_latency": sched_lat.available(),
-            "hackbench": hackbench.available(),
-            "sysbench": sysbench.available(),
-            "schbench": schbench.available(),
-        },
-        "oneshot_runs": [],
-    }
-
-    # Open CSV
-    csvfile = open(csv_path, "w", newline="")
-    writer = csv.DictWriter(csvfile, fieldnames=CSV_COLUMNS, extrasaction="ignore")
-    writer.writeheader()
-    print(f"CSV output: {csv_path}")
-
-    exit_req = [False]
+    # The scheduler, sched_latency and the workloads run in their own
+    # sessions (start_new_session), so a terminal ^C reaches only us. From
+    # here on SIGINT/SIGTERM just set exit_req (the signal number; 0 = keep
+    # going), which every wait loop below checks; the finally at the end
+    # stops whatever is running, also on errors, and a repeated ^C can't
+    # cut that short.
+    exit_req = [0]
 
     def handle_sig(sig, frame):
-        exit_req[0] = True
+        exit_req[0] = sig
 
     signal.signal(signal.SIGINT, handle_sig)
     signal.signal(signal.SIGTERM, handle_sig)
 
-    start_time = time.monotonic()
+    sched_proc = None
+    sched_log_fh = None
+    workload = [None]  # Popen of the workload phase in progress
+    csvfile = None
+    meta = None
 
+    # Phase helpers; writer, csvfile and start_time are set in the try below
+    # before their first call.
     def sample_row(phase, iter_idx):
         elapsed = time.monotonic() - start_time
         row = {
@@ -948,7 +1024,11 @@ def collect(args):
         at t=0 — deltas over microseconds are garbage (cpu_util pinning to
         0 or 100, ctx_switches near-zero). Short-lived phases still yield
         a summary row with parsed throughput (see below).
+
+        On exit_req the workload is killed at once instead of being given
+        up to 10 s to finish.
         """
+        workload[0] = proc
         stdout_chunks = []
 
         def _drain():
@@ -977,10 +1057,14 @@ def collect(args):
                 _kill_proc_tree(proc, timeout=5)
                 break
 
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
+        if exit_req[0]:
             _kill_proc_tree(proc, timeout=5)
+        else:
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                _kill_proc_tree(proc, timeout=5)
+        workload[0] = None
 
         drainer.join(timeout=5)
         if proc.stdout is not None:
@@ -1017,7 +1101,7 @@ def collect(args):
         return parsed
 
     def run_cooldown(iter_idx):
-        if cooldown <= 0:
+        if cooldown <= 0 or exit_req[0]:
             return
         print(f"    cooldown {cooldown}s", flush=True)
         end = time.monotonic() + cooldown
@@ -1027,7 +1111,138 @@ def collect(args):
             writer.writerow(row)
             csvfile.flush()
 
+    def check_sched_ext(where):
+        """Raise SchedExtError unless the kernel still runs the scheduler
+        this run is labelled as (default: none attached). A changed
+        enable_seq means it was ejected and re-attached since start."""
+        err = sched_ext_mismatch(read_sched_ext_state(), expect_scx, expect_ops,
+                                 sched_ext_start["enable_seq"])
+        if err is None and sched_proc is not None and sched_proc.poll() is not None:
+            err = f"scheduler process exited with code {sched_proc.returncode}"
+        if err is not None:
+            raise SchedExtError(where, err)
+
+    exit_code = 0
+    interrupted = 0
     try:
+        # Manage sched_ext scheduler subprocess (needs root).
+        if args.sched_bin:
+            print(f"Starting scheduler: {args.sched_bin}")
+            sched_log_fh = open(sched_log_path, "w")
+            try:
+                sched_proc = subprocess.Popen(
+                    [*sudo_prefix(), args.sched_bin],
+                    stdout=sched_log_fh,
+                    stderr=sched_log_fh,
+                    start_new_session=True,
+                )
+            except OSError as e:
+                print(f"Failed to start scheduler: {e}", file=sys.stderr)
+                return 1
+
+            # Wait for the kernel to report our ops attached. A live process
+            # proves nothing — BPF load/verify and attach happen after exec, and
+            # sudo failure, missing binary or attach failure exit only later.
+            deadline = time.monotonic() + SCHED_EXT_ATTACH_TIMEOUT
+            while True:
+                if exit_req[0]:
+                    err = "interrupted"
+                    break
+                rc = sched_proc.poll()
+                if rc is not None:
+                    err = f"exited with code {rc} before attach"
+                    break
+                st = read_sched_ext_state()
+                err = sched_ext_mismatch(st, expect_scx=True, expect_ops=expect_ops)
+                # The kernel bumps enable_seq just after publishing 'enabled';
+                # wait for it too so it's a valid baseline for later checks.
+                if (err is None and st["enable_seq"] is not None
+                        and st["enable_seq"] == sched_ext_start["enable_seq"]):
+                    err = "enable_seq not bumped yet"
+                if err is None:
+                    sched_ext_start = st
+                    break
+                if time.monotonic() > deadline:
+                    err = f"not attached after {SCHED_EXT_ATTACH_TIMEOUT:.0f}s: {err}"
+                    break
+                time.sleep(SCHED_EXT_POLL)
+
+            if err is not None:
+                if sched_proc.poll() is None:
+                    _kill_proc_tree(sched_proc, timeout=10)
+                sched_log_fh.close()
+                if exit_req[0]:
+                    print(f"Interrupted while {args.sched_bin} was attaching; stopped it",
+                          file=sys.stderr)
+                    return 128 + exit_req[0]
+                print(f"Scheduler {args.sched_bin} {err}; tail of {sched_log_path}:\n"
+                      f"{log_tail(sched_log_path)}", file=sys.stderr)
+                return 1
+            print(f"sched_ext: ops '{sched_ext_start['ops']}' attached")
+
+        # Start BPF latency tool
+        sched_lat.start(interval)
+
+        # Priming read (for delta-based sources)
+        proc_stat.read(interval)
+        schedstat.read(interval)
+        rapl.read(interval)
+
+        # Write metadata (oneshot results filled in after phases run)
+        meta = {
+            "scheduler": scheduler,
+            "workload_level": level,
+            "hackbench_args": hb_args,
+            "sysbench_threads": sb_threads,
+            "sysbench_duration": sysbench_dur,
+            "schbench_duration": schbench_dur,
+            "phase_repeats": repeats,
+            "phase_cooldown": cooldown,
+            "start_time": datetime.now().isoformat(),
+            "interval": interval,
+            "warmup": warmup,
+            "hostname": os.uname().nodename,
+            "cpu_count": os.cpu_count(),
+            # sched_ext identity: state/ops seen at start (ops None = default
+            # scheduler). sched_ext_ok: True once the final check passed, False
+            # (+ sched_ext_error / sched_ext_failed_at) if a check failed —
+            # rows from that phase on are NOT from `scheduler`.
+            "sched_ext_expected_ops": expect_ops,
+            "sched_ext_state": sched_ext_start["state"],
+            "sched_ext_ops": sched_ext_start["ops"],
+            "sched_ext_ok": None,
+            # complete: True once every phase ran and the final check passed.
+            # interrupted: signal name if ^C / SIGTERM stopped the run early.
+            "complete": False,
+            "interrupted": None,
+            "sources": {
+                "/proc/stat": proc_stat.available(),
+                "/proc/schedstat": schedstat.available(),
+                "RAPL": rapl.available(),
+                "sched_latency": sched_lat.available(),
+                "hackbench": hackbench.available(),
+                "sysbench": sysbench.available(),
+                "schbench": schbench.available(),
+            },
+            "oneshot_runs": [],
+        }
+
+        # Open CSV
+        csvfile = open(csv_path, "w", newline="")
+        writer = csv.DictWriter(csvfile, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        print(f"CSV output: {csv_path}")
+
+        # Provisional meta (complete: False) next to the CSV right away, so a
+        # run killed before the finally below (SIGKILL, OOM, crash) is not
+        # later taken for a good one; the finally overwrites it.
+        with open(meta_path, "w") as f:
+            json.dump(meta, f, indent=2)
+
+        start_time = time.monotonic()
+
+        check_sched_ext("start")
+
         # Warmup: run + sample but tag phase=warmup so downstream can filter.
         if warmup > 0:
             print(f"Warming up for {warmup}s...", flush=True)
@@ -1038,9 +1253,14 @@ def collect(args):
                 row = sample_row("warmup", 0)
                 writer.writerow(row)
                 csvfile.flush()
+            check_sched_ext("after warmup")
             print("  Warmup complete.", flush=True)
 
         # Phased runs: hackbench → cooldown → sysbench → cooldown → schbench → cooldown.
+        # Each workload phase is bracketed by check_sched_ext: a failed
+        # "after" check taints that phase, a failed "before" check the
+        # preceding cooldown only. On exit_req the remaining phases and
+        # cooldowns are skipped.
         for it in range(1, repeats + 1):
             if exit_req[0]:
                 break
@@ -1050,33 +1270,52 @@ def collect(args):
 
             if hackbench.available():
                 print("  hackbench...", flush=True)
+                check_sched_ext(f"before hackbench iter {it}")
                 drain_metrics()
                 run_result.update(run_proc_phase(
                     "hackbench", it, hackbench.start(), hackbench.parse, max_wait=300,
                 ))
+                check_sched_ext(f"after hackbench iter {it}")
             run_cooldown(it)
+            if exit_req[0]:
+                break
 
             if sysbench.available():
                 print(f"  sysbench ({sysbench_dur}s)...", flush=True)
+                check_sched_ext(f"before sysbench iter {it}")
                 drain_metrics()
                 run_result.update(run_proc_phase(
                     "sysbench", it, sysbench.start(sysbench_dur), sysbench.parse,
                     max_wait=sysbench_dur + 30,
                 ))
+                check_sched_ext(f"after sysbench iter {it}")
             run_cooldown(it)
+            if exit_req[0]:
+                break
 
             if schbench.available():
                 print(f"  schbench ({schbench_dur}s, level={level})...", flush=True)
+                check_sched_ext(f"before schbench iter {it}")
                 drain_metrics()
                 run_result.update(run_proc_phase(
                     "schbench", it, schbench.start(schbench_dur), schbench.parse,
                     max_wait=schbench_dur + 30,
                 ))
+                check_sched_ext(f"after schbench iter {it}")
             else:
                 print(f"  schbench not found at {schbench_bin}; skipping phase", flush=True)
             run_cooldown(it)
+            if exit_req[0]:
+                break  # cut short: its throughput would be partial
 
             meta["oneshot_runs"].append(run_result)
+
+        interrupted = exit_req[0]
+        if interrupted:
+            meta["interrupted"] = signal.Signals(interrupted).name
+        check_sched_ext("end")
+        meta["sched_ext_ok"] = True
+        meta["complete"] = not interrupted
 
         # Aggregate throughput stats across iterations
         if meta["oneshot_runs"]:
@@ -1099,21 +1338,47 @@ def collect(args):
                     agg[f"{k}_mean"] = mean
                     agg[f"{k}_stddev"] = std
             meta["oneshot_agg"] = agg
+    except SchedExtError as e:
+        # Stop here: every further phase would be mislabelled. The current
+        # iteration's run_result is dropped (never appended above).
+        exit_code = 1
+        meta["sched_ext_ok"] = False
+        meta["sched_ext_error"] = e.error
+        meta["sched_ext_failed_at"] = e.phase
+        print(f"\nERROR: sched_ext check failed at '{e.phase}': {e.error}\n"
+              f"Stopping run; rows from that phase on are not from '{scheduler}'.",
+              file=sys.stderr, flush=True)
     finally:
+        # Load first, then measurement, then the scheduler. workload is only
+        # still set if an exception left run_proc_phase early.
+        if workload[0] is not None:
+            _kill_proc_tree(workload[0], timeout=5)
         sched_lat.stop()
-        csvfile.close()
 
-        with open(meta_path, "w") as f:
-            json.dump(meta, f, indent=2)
-        print(f"Metadata: {meta_path}")
-
-        if sched_proc:
+        if sched_proc is not None and sched_proc.poll() is None:
             print("Stopping scheduler...")
             _kill_proc_tree(sched_proc, timeout=10)
-
         if sched_log_fh:
             sched_log_fh.close()
 
+        if csvfile is not None:
+            csvfile.close()
+        if meta is not None:
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, indent=2)
+            print(f"Metadata: {meta_path}")
+            # Read after the loader exited so its exit report (UEI reason) is in.
+            if sched_log_fh and meta["sched_ext_ok"] is False:
+                print(f"Tail of {sched_log_path}:\n{log_tail(sched_log_path)}",
+                      file=sys.stderr)
+
+    if exit_code:
+        print(f"\nFAILED (sched_ext check). Partial results: {csv_path}", file=sys.stderr)
+        return exit_code
+    if interrupted:
+        print(f"\nInterrupted ({meta['interrupted']}); remaining phases skipped. "
+              f"Partial results: {csv_path}", file=sys.stderr)
+        return 128 + interrupted
     print(f"\nDone. Results: {csv_path}")
     return 0
 
@@ -1135,6 +1400,15 @@ def main():
     )
     parser.add_argument(
         "--sched-bin", default=None, help="Path to sched_ext scheduler binary to run"
+    )
+    parser.add_argument(
+        "--sched-ops", default=None,
+        help="sched_ext ops name --sched-bin must attach, as shown in "
+             "/sys/kernel/sched_ext/root/ops (e.g. scx_A1349, eevdf, lavd). "
+             "NAME followed by '_<suffix>' matches too: Rust schedulers attach "
+             "as NAME_<version>[_g<sha>]_<target triple> (the full string is "
+             "stored in the metadata). Default: accept any ops name, but "
+             "still require state 'enabled'",
     )
     parser.add_argument(
         "--interval", type=int, default=1, help="Sampling interval in seconds (default: 1)"
@@ -1186,6 +1460,9 @@ def main():
         help=f"Path to schbench binary (default: {SCHBENCH_BIN_DEFAULT})",
     )
     args = parser.parse_args()
+
+    if args.sched_ops and not args.sched_bin:
+        parser.error("--sched-ops requires --sched-bin")
 
     if args.probe:
         run_probe(args)

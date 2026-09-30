@@ -253,26 +253,73 @@ def discover_level_dirs(session_root):
     return sorted([d for d in session_root.iterdir() if d.is_dir() and not d.name.startswith(".")])
 
 
+def run_skip_reason(meta_path):
+    """Why the run described by meta_path must not be aggregated, or None.
+
+    collect.py sets sched_ext_ok=False when the attached sched_ext scheduler
+    stopped matching the run's label (rows from that phase on are from
+    another scheduler), and complete=False unless every phase ran (^C,
+    SIGTERM, crash). A missing or unreadable meta, and one from an older
+    collect.py without these keys (or with sched_ext_ok None), is accepted.
+    """
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    if meta.get("sched_ext_ok") is False:
+        return (f"sched_ext check failed at {meta.get('sched_ext_failed_at')!r}: "
+                f"{meta.get('sched_ext_error')}")
+    if meta.get("complete") is False:
+        if meta.get("interrupted"):
+            return f"incomplete run (interrupted by {meta['interrupted']})"
+        return "incomplete run (collect.py did not finish)"
+    return None
+
+
+def pick_run(sched_dir):
+    """(csv, meta.json or None) of the newest run in sched_dir that its meta
+    doesn't mark bad (see run_skip_reason); None if there is none."""
+    for csv_path in sorted(sched_dir.glob("*.csv"), reverse=True):
+        meta_path = csv_path.parent / (csv_path.stem + ".meta.json")
+        why = run_skip_reason(meta_path)
+        if why is not None:
+            print(f"  WARN: skipping {csv_path}: {why}", file=sys.stderr)
+            continue
+        return csv_path, (meta_path if meta_path.exists() else None)
+    return None
+
+
 def process_level(level_dir):
     """Aggregate every scheduler under a level dir."""
-    # Map sched -> [run CSV paths], [meta paths]
-    sched_csvs = {}
-    sched_metas = {}
+    # Map sched -> [(run CSV path, its meta path or None)]
+    sched_runs = {}
+    sched_names = set()
     for run_dir in sorted(level_dir.glob("run*")):
         if not run_dir.is_dir():
             continue
         for sched_dir in run_dir.iterdir():
             if not sched_dir.is_dir():
                 continue
-            csvs = sorted(sched_dir.glob("*.csv"))
-            metas = sorted(sched_dir.glob("*.meta.json"))
-            if csvs:
-                sched_csvs.setdefault(sched_dir.name, []).append(csvs[-1])
-            if metas:
-                sched_metas.setdefault(sched_dir.name, []).append(metas[-1])
+            sched_names.add(sched_dir.name)
+            picked = pick_run(sched_dir)
+            if picked is not None:
+                sched_runs.setdefault(sched_dir.name, []).append(picked)
+
+    # A scheduler left without usable runs must not keep an aggregate from
+    # an earlier invocation.
+    for sched in sorted(sched_names - set(sched_runs)):
+        print(f"  [{level_dir.name}] {sched}: no usable runs", file=sys.stderr)
+        stale = level_dir / f"{sched}_aggregate.csv"
+        if stale.exists():
+            stale.unlink()
+            print(f"    removed stale {stale.name}", file=sys.stderr)
 
     oneshot_summary = {}
-    for sched, csvs in sched_csvs.items():
+    for sched, runs in sched_runs.items():
+        csvs = [c for c, _ in runs]
         print(f"  [{level_dir.name}] {sched}: {len(csvs)} runs")
         agg = aggregate_timeseries(csvs)
         if not agg.empty:
@@ -280,19 +327,20 @@ def process_level(level_dir):
             agg.to_csv(out, index=False)
             print(f"    -> {out.name}")
 
-        metas = sched_metas.get(sched, [])
+        metas = [m for _, m in runs if m is not None]
         oneshot_summary[sched] = aggregate_oneshot(metas)
 
+        # One interval per CSV (1.0 when its meta is missing or unreadable).
         intervals = []
-        for mf in metas:
+        for _, mf in runs:
+            if mf is None:
+                intervals.append(1.0)
+                continue
             try:
                 with open(mf) as f:
                     intervals.append(float(json.load(f).get("interval") or 1))
             except (OSError, json.JSONDecodeError, TypeError):
                 intervals.append(1.0)
-        # Pad/truncate to len(csvs) so zip pairs correctly even if metas missing.
-        while len(intervals) < len(csvs):
-            intervals.append(1.0)
         energy = aggregate_total_energy(csvs, intervals)
         if energy is not None:
             oneshot_summary[sched]["total_energy_joules"] = energy
