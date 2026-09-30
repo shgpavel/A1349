@@ -383,8 +383,9 @@ int BPF_PROG(handle_sched_switch,
  * Records enqueue timestamp, enqueue CPU (target rq), measures wakeup latency
  * (sched_waking → enqueue).
  *
- * Only called for ENQUEUE_WAKEUP events to avoid spurious measurements
- * from re-enqueues (migration, priority changes, cgroup moves).
+ * Only called for the enqueue of a wakeup (see handle_enqueue_task) to avoid
+ * spurious measurements from re-enqueues (migration, priority changes,
+ * cgroup moves).
  */
 static __always_inline void
 handle_enqueue(struct rq *rq, struct task_struct *p)
@@ -416,17 +417,34 @@ handle_enqueue(struct rq *rq, struct task_struct *p)
  * Generic enqueue hook.
  * Fires for all scheduler classes (CFS, sched_ext, RT, DL, etc.).
  *
- * Only processes ENQUEUE_WAKEUP events (flag bit 0) to avoid recording
- * re-enqueue events (migration, priority boost, cgroup move) which would
- * overwrite enqueue_ts and consume waking_ts.
+ * Only processes wakeup enqueues to avoid recording re-enqueue events
+ * (migration, priority boost, cgroup move) which would overwrite enqueue_ts
+ * and consume waking_ts: ENQUEUE_WAKEUP, plus ENQUEUE_DELAYED during a
+ * wakeup.  The latter is fair's delayed dequeue: a task that blocks with
+ * negative lag stays queued (se.sched_delayed), and waking it goes through
+ * ttwu_runnable() -> enqueue_task(ENQUEUE_NOCLOCK | ENQUEUE_DELAYED),
+ * without ENQUEUE_WAKEUP (v7.0 kernel/sched/core.c; its only
+ * ENQUEUE_DELAYED caller).  Skipping it would drop those wakeups from
+ * default-scheduler runs only — sched_ext has no delayed dequeue.  waking_ts
+ * (set at sched_waking, cleared at sched_wakeup) confirms a wakeup is in
+ * flight.  Flag values from v7.0 kernel/sched/sched.h.
  */
-#define ENQUEUE_WAKEUP 1
+#define ENQUEUE_WAKEUP  0x0001
+#define ENQUEUE_DELAYED 0x0020
 SEC("fentry/enqueue_task")
 int BPF_PROG(handle_enqueue_task, struct rq *rq, struct task_struct *p,
 	     int flags)
 {
-	if (!(flags & ENQUEUE_WAKEUP))
-		return 0;
+	if (!(flags & ENQUEUE_WAKEUP)) {
+		struct task_ts *ts;
+
+		if (!(flags & ENQUEUE_DELAYED))
+			return 0;
+		/* No F_CREATE: a wakeup in flight already created it. */
+		ts = bpf_task_storage_get(&task_timestamps, p, 0, 0);
+		if (!ts || !ts->waking_ts)
+			return 0;
+	}
 
 	handle_enqueue(rq, p);
 	return 0;

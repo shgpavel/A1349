@@ -12,6 +12,7 @@ import argparse
 import atexit
 import os
 import random
+import signal
 import subprocess
 import sys
 import threading
@@ -23,6 +24,8 @@ DEFAULT_LEVELS = ["light", "moderate", "stress"]
 
 # (label, binary relpath, sched_ext ops name the binary attaches — checked by
 # collect.py against /sys/kernel/sched_ext/root/ops; None for default).
+# Rust schedulers attach as "<name>_<version>[_g<sha>]_<target triple>"
+# (e.g. "lavd_1.0.13_..."); collect.py accepts "<name>" plus any "_<suffix>".
 SCHEDULERS = [
     #("default", None, None),
     #("scx_EEVDF", "impl/scx_EEVDF/build/scheds/c/scx_eevdf", "eevdf"),
@@ -32,8 +35,37 @@ SCHEDULERS = [
 
 
 def run(cmd):
+    """Run cmd, raise CalledProcessError if it fails.
+
+    Not subprocess.run: on ^C it SIGKILLs the child after 0.25 s, so
+    collect.py never gets to stop the sched_ext scheduler, sched_latency and
+    the workload (all in their own sessions, out of the ^C's reach). The
+    child is in our foreground process group and got the SIGINT too, unless
+    the signal was sent to this pid alone (kill, IDE/CI stop button), so
+    forward it once (collect.py's handler is idempotent); then wait for the
+    child to finish tearing down and re-raise.  Never SIGKILL it.
+    """
     print("+", " ".join(str(part) for part in cmd), flush=True)
-    subprocess.run(cmd, check=True)
+    proc = subprocess.Popen(cmd)
+    try:
+        rc = proc.wait()
+    except KeyboardInterrupt:
+        try:
+            proc.send_signal(signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        print(f"\nInterrupted; waiting for {Path(cmd[1]).name} (pid {proc.pid}) "
+              f"to clean up...", file=sys.stderr, flush=True)
+        while True:
+            try:
+                proc.wait()
+                break
+            except KeyboardInterrupt:
+                print(f"Still waiting for pid {proc.pid} to exit...",
+                      file=sys.stderr, flush=True)
+        raise
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, cmd)
 
 
 def prime_sudo():
@@ -228,6 +260,11 @@ def main():
     session_plan = [(lv, r) for lv in levels for r in range(1, args.runs + 1)]
     rng.shuffle(session_plan)
 
+    # A failed collect.py run (scheduler didn't attach, sched_ext check
+    # failed, ...) doesn't abort the session: note it and go on. Its partial
+    # CSV, if any, is marked in its meta.json and skipped by aggregate.py.
+    failed = []
+
     for plan_idx, (level, run_idx) in enumerate(session_plan, start=1):
         level_dir = results_root / level
         order = list(scheds)
@@ -256,29 +293,36 @@ def main():
                 flush=True,
             )
             out = level_dir / f"run{run_idx:02d}" / label
-            collect_one(
-                sys.executable,
-                collect_py,
-                sl_bin,
-                label,
-                sched_bin,
-                sched_ops,
-                level,
-                args.phase_repeats,
-                args.phase_cooldown,
-                args.sysbench_duration,
-                args.schbench_duration,
-                args.interval,
-                args.warmup,
-                out,
-                sysbench_db,
-            )
+            try:
+                collect_one(
+                    sys.executable,
+                    collect_py,
+                    sl_bin,
+                    label,
+                    sched_bin,
+                    sched_ops,
+                    level,
+                    args.phase_repeats,
+                    args.phase_cooldown,
+                    args.sysbench_duration,
+                    args.schbench_duration,
+                    args.interval,
+                    args.warmup,
+                    out,
+                    sysbench_db,
+                )
+            except subprocess.CalledProcessError as e:
+                failed.append((level, run_idx, label, e.returncode, out))
+                print(f"\nWARNING: collect.py FAILED (exit code {e.returncode}) for "
+                      f"{label} level={level} run={run_idx}; continuing. See {out}",
+                      file=sys.stderr, flush=True)
 
     # Aggregation
     print("\n=== Aggregating ===")
     run([sys.executable, str(aggregate_py), str(results_root)])
 
     # Per-level visualization (reads aggregate CSVs)
+    any_aggs = False
     for level in levels:
         print(f"\n=== Plotting level={level} ===")
         level_dir = results_root / level
@@ -288,6 +332,7 @@ def main():
         if not agg_csvs:
             print(f"  (no aggregates for {level})")
             continue
+        any_aggs = True
         run(
             [
                 sys.executable,
@@ -300,15 +345,29 @@ def main():
 
     # Cross-level comparative plots
     print("\n=== Comparative plots ===")
-    comp_dir = plots_root / "comparative"
-    comp_dir.mkdir(parents=True, exist_ok=True)
-    run([sys.executable, str(compare_py), str(results_root), "--output", str(comp_dir)])
+    if any_aggs:
+        comp_dir = plots_root / "comparative"
+        comp_dir.mkdir(parents=True, exist_ok=True)
+        run([sys.executable, str(compare_py), str(results_root), "--output", str(comp_dir)])
+    else:
+        print("  (no aggregates)")
 
     print("\nSuite complete.")
     print(f"Results: {results_root}")
     print(f"Plots:   {plots_root}")
+    if failed:
+        print(f"\n{len(failed)} of {len(session_plan) * len(scheds)} collect.py runs FAILED:",
+              file=sys.stderr)
+        for level, run_idx, label, rc, out in failed:
+            print(f"  level={level} run={run_idx:02d} {label}: exit code {rc}  ({out})",
+                  file=sys.stderr)
+        return 1
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        sys.exit(130)
