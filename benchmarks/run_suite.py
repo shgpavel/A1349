@@ -21,11 +21,13 @@ from pathlib import Path
 
 DEFAULT_LEVELS = ["light", "moderate", "stress"]
 
+# (label, binary relpath, sched_ext ops name the binary attaches — checked by
+# collect.py against /sys/kernel/sched_ext/root/ops; None for default).
 SCHEDULERS = [
-    #("default", None),
-    #("scx_EEVDF", "impl/scx_EEVDF/build/scheds/c/scx_eevdf"),
-    #("LAVD", None),  # filled in from --lavd-bin
-    ("scx_A1349", "impl/scx_A1349/build/scheds/c/scx_A1349"),
+    #("default", None, None),
+    #("scx_EEVDF", "impl/scx_EEVDF/build/scheds/c/scx_eevdf", "eevdf"),
+    #("LAVD", None, "lavd"),  # binary filled in from --lavd-bin
+    ("scx_A1349", "impl/scx_A1349/build/scheds/c/scx_A1349", "scx_A1349"),
 ]
 
 
@@ -75,6 +77,7 @@ def collect_one(
     sched_latency_bin,
     label,
     sched_bin,
+    sched_ops,
     level,
     phase_repeats,
     phase_cooldown,
@@ -110,6 +113,8 @@ def collect_one(
     ]
     if sched_bin is not None:
         cmd.extend(["--sched-bin", str(sched_bin)])
+        if sched_ops is not None:
+            cmd.extend(["--sched-ops", sched_ops])
     run(cmd)
 
 
@@ -161,14 +166,14 @@ def main():
 
     # Build scheduler list with resolved paths
     scheds = []
-    for label, relpath in SCHEDULERS:
+    for label, relpath, ops in SCHEDULERS:
         if label == "LAVD":
             path = lavd_bin
         elif relpath is None:
             path = None
         else:
             path = repo_root / relpath
-        scheds.append((label, path))
+        scheds.append((label, path, ops))
 
     if args.scheds:
         wanted = set(args.scheds.split(","))
@@ -177,7 +182,7 @@ def main():
     levels = [lv.strip() for lv in args.levels.split(",") if lv.strip()]
 
     # Sanity: binaries exist
-    missing = [str(p) for _, p in scheds if p is not None and not p.is_file()]
+    missing = [str(p) for _, p, _ in scheds if p is not None and not p.is_file()]
     if not sl_bin.is_file():
         missing.append(str(sl_bin))
     if missing:
@@ -239,7 +244,7 @@ def main():
             print(f"Plan-boundary cooldown {args.cooldown}s...", flush=True)
             time.sleep(args.cooldown)
 
-        for i, (label, sched_bin) in enumerate(order):
+        for i, (label, sched_bin, sched_ops) in enumerate(order):
             if i > 0 and args.cooldown > 0:
                 print(f"Cooldown {args.cooldown}s...", flush=True)
                 time.sleep(args.cooldown)
@@ -257,6 +262,7 @@ def main():
                 sl_bin,
                 label,
                 sched_bin,
+                sched_ops,
                 level,
                 args.phase_repeats,
                 args.phase_cooldown,

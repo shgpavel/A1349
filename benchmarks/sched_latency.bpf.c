@@ -4,7 +4,9 @@
  * Measures eight latency categories via tracepoints:
  *   - Schedule delay:     sched_wakeup → sched_switch (task starts running)
  *   - Runqueue latency:   enqueue → sched_switch (time on runqueue)
- *   - Wakeup latency:     sched_wakeup → enqueue
+ *   - Wakeup latency:     sched_waking → enqueue (select_cpu + remote
+ *                         wakeup queueing; sched_wakeup itself fires only
+ *                         after the enqueue, so it can't be the start point)
  *   - Preemption latency: stopping(runnable) → next running
  *   - Idle wakeup:        CPU goes idle → CPU picks up next task
  *   - Migration latency:  runqueue latency for tasks that ran on a
@@ -34,12 +36,15 @@
 char _license[] SEC("license") = "GPL";
 
 #define MAX_CPUS      512
-#define HIST_BUCKETS  32   /* log2 buckets: 0=<1ns .. 31=~2s */
+#define HIST_BUCKETS  32   /* log2 buckets: 0=[0,2ns) .. 31=[~2.1s, inf) */
+
+_Static_assert(HIST_BUCKETS >= 2 && HIST_BUCKETS <= 64,
+	       "log2_bucket() assumes 2..64 buckets");
 
 enum sched_latency_type {
 	LAT_SCHED_DELAY  = 0,  /* wakeup → running */
 	LAT_RUNQUEUE     = 1,  /* enqueue → running */
-	LAT_WAKEUP       = 2,  /* wakeup → enqueue */
+	LAT_WAKEUP       = 2,  /* waking → enqueue */
 	LAT_PREEMPTION   = 3,  /* stopping(runnable) → running */
 	LAT_IDLE_WAKEUP  = 4,  /* CPU idle → CPU running real task */
 	LAT_MIGRATION    = 5,  /* runqueue lat for tasks that migrated CPUs */
@@ -81,6 +86,7 @@ struct {
 
 /* Per-task timestamps for each latency event. */
 struct task_ts {
+	u64 waking_ts;       /* sched_waking of an in-flight wakeup (0 = none) */
 	u64 wakeup_ts;       /* last sched_wakeup timestamp */
 	u64 enqueue_ts;      /* last enqueue timestamp */
 	u64 preempt_ts;      /* last preempted (stopping while runnable) timestamp */
@@ -122,21 +128,26 @@ filter_task(struct task_struct *p)
 static __always_inline u32
 log2_bucket(u64 val)
 {
-	if (!val)
-		return 0;
+	/*
+	 * Clamp first: anything >= 2^(HIST_BUCKETS-1) ns goes into the last
+	 * bucket.  This also covers the upper 32 bits of val (>= ~4.3 s), which
+	 * a 31..0 scan would skip and then misfile by its low bits.
+	 */
+	if (val >> (HIST_BUCKETS - 1))
+		return HIST_BUCKETS - 1;
 
 	u32 bit = 0;
 
-	/* manual log2 - count leading zeros */
+	/* manual log2 - highest set bit; val < 2^(HIST_BUCKETS-1) here */
 	#pragma unroll
-	for (int i = 31; i >= 0; i--) {
+	for (int i = HIST_BUCKETS - 2; i > 0; i--) {
 		if (val & (1ULL << i)) {
 			bit = i;
 			break;
 		}
 	}
 
-	return bit < HIST_BUCKETS ? bit : HIST_BUCKETS - 1;
+	return bit;	/* 0 for val 0 and 1 */
 }
 
 static __always_inline void
@@ -168,8 +179,29 @@ get_ts(struct task_struct *p)
 }
 
 /*
+ * Tracepoint: sched_waking
+ * Fires at the start of try_to_wake_up(), before select_task_rq() and the
+ * enqueue.  Start point of LAT_WAKEUP (consumed in handle_enqueue()).
+ */
+SEC("tp_btf/sched_waking")
+int BPF_PROG(handle_sched_waking, struct task_struct *p)
+{
+	if (filter_task(p))
+		return 0;
+
+	struct task_ts *ts = get_ts(p);
+	if (!ts)
+		return 0;
+
+	ts->waking_ts = bpf_ktime_get_ns();
+	return 0;
+}
+
+/*
  * Tracepoint: sched_wakeup
- * Record wakeup timestamp and measure sleep duration.
+ * Fires at the end of every successful try_to_wake_up() (ttwu_do_wakeup),
+ * i.e. AFTER the enqueue.  Record wakeup timestamp, measure sleep duration,
+ * and close the waking window.
  */
 SEC("tp_btf/sched_wakeup")
 int BPF_PROG(handle_sched_wakeup, struct task_struct *p)
@@ -188,6 +220,16 @@ int BPF_PROG(handle_sched_wakeup, struct task_struct *p)
 		record_latency(LAT_SLEEP, now - ts->sleep_start_ts);
 		ts->sleep_start_ts = 0;
 	}
+
+	/*
+	 * The wakeup is complete: an enqueue for it already consumed
+	 * waking_ts.  Wakeups that never enqueue (task still on the rq —
+	 * ttwu_runnable — or p == current) end here too, so clearing now
+	 * keeps a stale waking_ts from reaching a later enqueue.  Not cleared
+	 * at switch-out: sched_waking may legitimately fire before the wakee
+	 * finishes switching out (enqueue waits for p->on_cpu == 0).
+	 */
+	ts->waking_ts = 0;
 
 	ts->wakeup_ts = now;
 	return 0;
@@ -271,6 +313,17 @@ int BPF_PROG(handle_sched_switch,
 				ts->run_start_ts = 0;
 			}
 
+			/*
+			 * wakeup_ts set now is stale: prev was woken while
+			 * still running (ttwu_runnable / p == current), with
+			 * no enqueue.  Left alone, a later switch-in (e.g. after
+			 * preemption) would record LAT_SCHED_DELAY spanning
+			 * prev's whole run.  A real wakeup of prev can only fire
+			 * sched_wakeup once prev is off-CPU (rq lock /
+			 * p->on_cpu), i.e. after this point.
+			 */
+			ts->wakeup_ts = 0;
+
 			u64 prev_state = BPF_CORE_READ(prev, __state);
 			if (prev_state == 0) {  /* TASK_RUNNING — preempted */
 				ts->preempt_ts     = now;
@@ -327,7 +380,8 @@ int BPF_PROG(handle_sched_switch,
 
 /*
  * Common enqueue logic shared by both CFS and sched_ext hooks.
- * Records enqueue timestamp, enqueue CPU (target rq), measures wakeup latency.
+ * Records enqueue timestamp, enqueue CPU (target rq), measures wakeup latency
+ * (sched_waking → enqueue).
  *
  * Only called for ENQUEUE_WAKEUP events to avoid spurious measurements
  * from re-enqueues (migration, priority changes, cgroup moves).
@@ -344,11 +398,13 @@ handle_enqueue(struct rq *rq, struct task_struct *p)
 
 	u64 now = bpf_ktime_get_ns();
 
-	/* Wakeup latency: wakeup → enqueue */
-	if (ts->wakeup_ts) {
-		u64 delta = now - ts->wakeup_ts;
-		record_latency(LAT_WAKEUP, delta);
-		/* Don't clear wakeup_ts - schedule delay still needs it */
+	/*
+	 * Wakeup latency: waking → enqueue.  sched_wakeup fires only after this
+	 * enqueue, so wakeup_ts here would still be the PREVIOUS wakeup's.
+	 */
+	if (ts->waking_ts) {
+		record_latency(LAT_WAKEUP, now - ts->waking_ts);
+		ts->waking_ts = 0;
 	}
 
 	ts->enqueue_ts  = now;
@@ -362,7 +418,7 @@ handle_enqueue(struct rq *rq, struct task_struct *p)
  *
  * Only processes ENQUEUE_WAKEUP events (flag bit 0) to avoid recording
  * re-enqueue events (migration, priority boost, cgroup move) which would
- * overwrite enqueue_ts and generate spurious LAT_WAKEUP samples.
+ * overwrite enqueue_ts and consume waking_ts.
  */
 #define ENQUEUE_WAKEUP 1
 SEC("fentry/enqueue_task")

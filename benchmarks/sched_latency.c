@@ -5,7 +5,7 @@
  * avg and p99 statistics for:
  *   - Schedule delay     (wakeup → running)
  *   - Runqueue latency   (enqueue → running)
- *   - Wakeup latency     (wakeup → enqueue)
+ *   - Wakeup latency     (sched_waking → enqueue)
  *   - Preemption latency (preempted → re-running)
  *   - Idle wakeup        (CPU idle → CPU running real task)
  *   - Migration latency  (runqueue lat for tasks that migrated CPUs)
