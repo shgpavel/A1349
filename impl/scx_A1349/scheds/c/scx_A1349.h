@@ -47,6 +47,7 @@ enum auction_stat {
 	STAT_STEAL,          /* cross-cluster steal                     */
 	STAT_STARVED_AGED,   /* STARVED head served by the age bound    */
 	STAT_STARVED_IDLE,   /* STARVED served because clusters empty   */
+	STAT_DEMOTE,         /* cluster DSQ wait bound hit → STARVED    */
 	STAT_NO_CTX,         /* enqueue without task ctx → global DSQ   */
 	STAT_NR,
 };

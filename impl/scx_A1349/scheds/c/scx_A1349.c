@@ -54,6 +54,7 @@ static const char *const stat_names[STAT_NR] = {
 	[STAT_STEAL]        = "steal",
 	[STAT_STARVED_AGED] = "starved_aged",
 	[STAT_STARVED_IDLE] = "starved_idle",
+	[STAT_DEMOTE]       = "demote",
 	[STAT_NO_CTX]       = "no_ctx",
 };
 
@@ -81,6 +82,39 @@ populate_delta_table(struct scx_A1349 *skel, double delta)
 }
 
 /*
+ * Parse a sysfs cpulist ("0-3,6,8-11") into @online[0..n).  Returns false if
+ * the file cannot be read, in which case the caller treats every CPU as
+ * online.
+ */
+static bool
+read_online_cpus(bool *online, int n)
+{
+	FILE *f = fopen("/sys/devices/system/cpu/online", "r");
+	int lo, hi;
+	char sep;
+
+	if (!f)
+		return false;
+	memset(online, 0, n * sizeof(*online));
+	while (fscanf(f, "%d", &lo) == 1) {
+		hi = lo;
+		sep = (char)fgetc(f);
+		if (sep == '-') {
+			if (fscanf(f, "%d", &hi) != 1)
+				break;
+			sep = (char)fgetc(f);
+		}
+		for (int c = lo; c <= hi && c < n; c++)
+			if (c >= 0)
+				online[c] = true;
+		if (sep != ',')
+			break;
+	}
+	fclose(f);
+	return true;
+}
+
+/*
  * Refresh per-CPU capacity-derived data:
  *   cpu_capacity[cpu], cpu_is_p[cpu], global_data.{max,min,cost,p_cc,e_cc}.
  * Caller picks cost_p; cost_e is either operator-provided or auto-derived.
@@ -99,11 +133,23 @@ refresh_cpu_capacities(struct scx_A1349 *skel,
 
 	int ncpu = libbpf_num_possible_cpus();
 	__u32 caps[512] = {0};
+	bool online[512];
 	if (ncpu > 512)
 		ncpu = 512;
 
+	/*
+	 * cpu_capacity only exists for online CPUs; offline and possible-but-
+	 * absent CPUs keep their previous map entries and are left out of
+	 * η_P / η_E and the K_P / K_E counts.
+	 */
+	if (!read_online_cpus(online, 512))
+		memset(online, 1, sizeof(online));
+
 	for (int cpu = 0; cpu < ncpu; cpu++) {
 		char path[128];
+
+		if (!online[cpu])
+			continue;
 		snprintf(path, sizeof(path),
 			 "/sys/devices/system/cpu/cpu%d/cpu_capacity", cpu);
 
@@ -132,6 +178,9 @@ refresh_cpu_capacities(struct scx_A1349 *skel,
 
 	__u32 p_cc = 0, e_cc = 0;
 	for (int cpu = 0; cpu < ncpu; cpu++) {
+		if (!online[cpu])
+			continue;
+
 		__u8 is_p = ((__u64)caps[cpu] * 100 >= (__u64)max_cap * P_CAP_PCT);
 		__u32 key = (__u32)cpu;
 		__u8 old_flag = 0xff;
@@ -204,6 +253,18 @@ print_stats(struct scx_A1349 *skel)
 				sum += vals[c];
 		printf(" %s=%llu", stat_names[i], (unsigned long long)sum);
 	}
+
+	/* \bar W_κ, stored × DELTA_SCALE by the BPF side. */
+	{
+		__u64 w_bar[2] = {0, 0};
+		__u32 key = 0;
+
+		if (!bpf_map_lookup_elem(bpf_map__fd(skel->maps.runtime_data),
+					 &key, w_bar))
+			printf(" w_bar_p=%.2f w_bar_e=%.2f",
+			       (double)w_bar[0] / DELTA_SCALE,
+			       (double)w_bar[1] / DELTA_SCALE);
+	}
 	printf("\n");
 	fflush(stdout);
 }
@@ -259,6 +320,7 @@ main(int argc, char **argv)
 	char              *end;
 	unsigned int       refresh_tick;
 	__u64              ecode;
+	bool               ejected;
 
 	signal(SIGINT,  sigint_handler);
 	signal(SIGTERM, sigint_handler);
@@ -352,14 +414,20 @@ restart:
 		}
 	}
 
+	/*
+	 * An exit recorded before we detach came from the kernel (watchdog,
+	 * runtime error, hotplug); a user unregister is only recorded inside
+	 * bpf_link__destroy().
+	 */
+	ejected = UEI_EXITED(skel, uei);
+
 	print_stats(skel);
 	bpf_link__destroy(link);
 	ecode = UEI_REPORT(skel, uei);
 	scx_A1349__destroy(skel);
 
-	if (UEI_ECODE_RESTART(ecode))
+	if (UEI_ECODE_RESTART(ecode) && !exit_req)
 		goto restart;
 
-	/* Ejected by the kernel rather than stopped by the operator. */
-	return exit_req ? 0 : 1;
+	return ejected ? 1 : 0;
 }
