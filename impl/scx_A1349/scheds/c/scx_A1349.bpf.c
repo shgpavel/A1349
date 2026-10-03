@@ -65,8 +65,12 @@ UEI_DEFINE(uei);
  * Only sleep earns credit: time spent running or waiting in a queue does
  * not.  Credited once per wake-up.
  */
-#define BUDGET_MUL          (8ULL     << PHI_VALUE_SHIFT)
-#define REPLENISH_DIV       (12000000ULL >> PHI_VALUE_SHIFT)
+const volatile u64 budget_mul       = BUDGET_MUL_DEF;
+const volatile u64 replenish_div    = REPLENISH_DIV_DEF;
+const volatile u32 starve_floor_pct = STARVE_FLOOR_PCT_DEF;
+
+#define BUDGET_MUL          budget_mul
+#define REPLENISH_DIV       replenish_div
 #define REPLENISH_IDLE_CAP  1000000000ULL
 
 /*
@@ -74,8 +78,11 @@ UEI_DEFINE(uei);
  *   SLICE_P  20 ms.
  *   SLICE_E  1.5× larger, amortises preempt overhead on slower cores.
  */
-#define AUCTION_SLICE_P     20000000ULL
-#define AUCTION_SLICE_E     ((3ULL * AUCTION_SLICE_P) / 2)
+const volatile u64 slice_p_ns  = SLICE_P_US_DEF * 1000ULL;
+const volatile u32 slice_e_pct = SLICE_E_PCT_DEF;
+
+#define AUCTION_SLICE_P     slice_p_ns
+#define AUCTION_SLICE_E     (slice_p_ns * slice_e_pct / 100)
 
 /*
  * φ encoding for the kernel DSQ (which sorts by ascending u64 vtime).
@@ -95,7 +102,9 @@ UEI_DEFINE(uei);
 #define LEN_CAP_NS          ((u64)MAX_CONTRACT_LENGTH * AUCTION_SLICE_P)
 
 /* \bar W_κ EWMA: \bar W ← ((W_BAR_EWMA_DEN − 1) · \bar W + W_realised) / DEN. */
-#define W_BAR_EWMA_DEN      16u
+const volatile u32 w_bar_ewma_den = W_BAR_EWMA_DEN_DEF;
+
+#define W_BAR_EWMA_DEN      w_bar_ewma_den
 
 /* DSQ identifiers. */
 #define AUCTION_DSQ_P       1ULL
@@ -108,7 +117,9 @@ UEI_DEFINE(uei);
  * cluster DSQs were empty, and sustained load starved it until the
  * sched_ext watchdog ejected the scheduler.
  */
-#define STARVED_MAX_WAIT_NS (5ULL * AUCTION_SLICE_P)
+const volatile u32 starved_wait_slices = STARVED_WAIT_SLICES_DEF;
+
+#define STARVED_MAX_WAIT_NS ((u64)starved_wait_slices * AUCTION_SLICE_P)
 
 /*
  * Bound on how long a task may keep losing the auction in a cluster DSQ.
@@ -119,11 +130,15 @@ UEI_DEFINE(uei);
  * keyed by its original enqueue time, where STARVED_MAX_WAIT_NS applies.
  * Cluster DSQs are scanned at most once per AGE_SCAN_PERIOD_NS system-wide.
  */
-#define CLUSTER_MAX_WAIT_NS (25ULL * AUCTION_SLICE_P)
+const volatile u32 cluster_wait_slices = CLUSTER_WAIT_SLICES_DEF;
+
+#define CLUSTER_MAX_WAIT_NS ((u64)cluster_wait_slices * AUCTION_SLICE_P)
 #define AGE_SCAN_PERIOD_NS  AUCTION_SLICE_P
 
 /* Upper bound for the P-core idle scan in select_cpu. */
 #define AUCTION_NCPU_MAX        64
+
+const volatile u32 idle_pick = IDLE_PICK_PSCAN;
 
 /* Maximum auction retries per dispatch tick (top, runner, …). */
 #define DISPATCH_AUCTION_TRIES 3
@@ -237,6 +252,8 @@ struct {
 
 /* bpf_ktime of the last cluster DSQ age scan (see CLUSTER_MAX_WAIT_NS). */
 static u64 age_scan_last;
+
+private(A1349) struct bpf_cpumask __kptr *p_cpumask;
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
 
@@ -604,6 +621,28 @@ BPF_STRUCT_OPS(auction_select_cpu,
 	if (tctx)
 		tctx->wake_prev_cpu = prev_cpu;
 
+	if (idle_pick == IDLE_PICK_CORE) {
+		const struct cpumask *pm = cast_mask(p_cpumask);
+
+		if (pm) {
+			cpu = scx_bpf_select_cpu_and(p, prev_cpu, wake_flags,
+						     pm, SCX_PICK_IDLE_CORE);
+			if (cpu < 0)
+				cpu = scx_bpf_select_cpu_and(p, prev_cpu,
+							     wake_flags,
+							     p->cpus_ptr,
+							     SCX_PICK_IDLE_CORE);
+			if (cpu < 0)
+				cpu = scx_bpf_select_cpu_and(p, prev_cpu,
+							     wake_flags,
+							     p->cpus_ptr, 0);
+			if (cpu < 0)
+				return prev_cpu;
+			is_idle = true;
+			goto have_cpu;
+		}
+	}
+
 	/*
 	 * P-bias scan (model §2.4 Allocation rule, refined):  prefer an idle
 	 * P-cluster CPU first — "land on the strongest core that's free".
@@ -698,12 +737,12 @@ BPF_STRUCT_OPS(auction_enqueue, struct task_struct *p, u64 enq_flags)
 
 	/*
 	 * Budget admissibility (theory Proposition 1), cheap conservative
-	 * form: a task whose bucket is below 10% of B_i^max goes straight to
-	 * STARVED instead of wasting a dispatch tick on an auction it will
-	 * probably lose.  The exact p ≤ B check happens at dispatch.
+	 * form: a task whose bucket is below starve_floor_pct of B_i^max goes
+	 * straight to STARVED instead of wasting a dispatch tick on an auction
+	 * it will probably lose.  The exact p ≤ B check happens at dispatch.
 	 */
 	if (tctx->budget_max &&
-	    tctx->budget * 10 < tctx->budget_max) {
+	    tctx->budget * 100 < tctx->budget_max * starve_floor_pct) {
 		tctx->phi_enq = on_p ? phi_p : phi_e;
 		tctx->m_enq   = on_p ? m_p : m_e;
 		dsq_id   = AUCTION_DSQ_STARVED;
@@ -1328,7 +1367,19 @@ s32
 BPF_STRUCT_OPS_SLEEPABLE(auction_init)
 {
 	struct auction_ctx *gdata = get_ctx();
+	struct bpf_cpumask *pm;
 	s32 ret;
+	s32 c;
+
+	pm = bpf_cpumask_create();
+	if (!pm)
+		return -ENOMEM;
+	bpf_for(c, 0, AUCTION_NCPU_MAX)
+		if (cpu_known((u32)c) && cpu_is_p_type((u32)c))
+			bpf_cpumask_set_cpu((u32)c, pm);
+	pm = bpf_kptr_xchg(&p_cpumask, pm);
+	if (pm)
+		bpf_cpumask_release(pm);
 
 	if (gdata) {
 		if (!gdata->max_capacity)

@@ -114,6 +114,51 @@ read_online_cpus(bool *online, int n)
 	return true;
 }
 
+static bool
+read_u32_file(const char *path, __u32 *out)
+{
+	FILE *f = fopen(path, "r");
+	bool ok;
+
+	if (!f)
+		return false;
+	ok = fscanf(f, "%u", out) == 1;
+	fclose(f);
+	return ok;
+}
+
+static bool
+cppc_capacities(__u32 *caps, const bool *online, int ncpu)
+{
+	__u32 perf[512] = {0};
+	__u32 hi = 0, lo = 0;
+	char path[128];
+
+	if (access("/sys/devices/cpu_atom/cpus", F_OK))
+		return false;
+
+	for (int cpu = 0; cpu < ncpu; cpu++) {
+		if (!online[cpu])
+			continue;
+		snprintf(path, sizeof(path),
+			 "/sys/devices/system/cpu/cpu%d/acpi_cppc/highest_perf",
+			 cpu);
+		if (!read_u32_file(path, &perf[cpu]) || !perf[cpu])
+			return false;
+		if (perf[cpu] > hi)
+			hi = perf[cpu];
+		if (!lo || perf[cpu] < lo)
+			lo = perf[cpu];
+	}
+	if (hi == lo)
+		return false;
+
+	for (int cpu = 0; cpu < ncpu; cpu++)
+		if (online[cpu])
+			caps[cpu] = (__u32)((__u64)perf[cpu] * 1024 / hi);
+	return true;
+}
+
 /*
  * Refresh per-CPU capacity-derived data:
  *   cpu_capacity[cpu], cpu_is_p[cpu], global_data.{max,min,cost,p_cc,e_cc}.
@@ -130,6 +175,7 @@ refresh_cpu_capacities(struct scx_A1349 *skel,
 	__u32 max_cap = 0, min_cap = 0;
 	__u32 cost_e;
 	bool changed = false;
+	bool cppc = false;
 
 	int ncpu = libbpf_num_possible_cpus();
 	__u32 caps[512] = {0};
@@ -152,16 +198,24 @@ refresh_cpu_capacities(struct scx_A1349 *skel,
 			continue;
 		snprintf(path, sizeof(path),
 			 "/sys/devices/system/cpu/cpu%d/cpu_capacity", cpu);
+		if (!read_u32_file(path, &caps[cpu]))
+			caps[cpu] = 1024;
+		if (caps[cpu] > max_cap)
+			max_cap = caps[cpu];
+		if (!min_cap || caps[cpu] < min_cap)
+			min_cap = caps[cpu];
+	}
 
-		__u32 cap = 1024;
-		FILE *f = fopen(path, "r");
-		if (f) {
-			if (fscanf(f, "%u", &cap) != 1)
-				cap = 1024;
-			fclose(f);
-		}
-		caps[cpu] = cap;
+	if (max_cap == min_cap)
+		cppc = cppc_capacities(caps, online, ncpu);
 
+	max_cap = 0;
+	min_cap = 0;
+	for (int cpu = 0; cpu < ncpu; cpu++) {
+		if (!online[cpu])
+			continue;
+
+		__u32 cap = caps[cpu];
 		__u32 key = (__u32)cpu;
 		__u32 old_cap = 0;
 		if (bpf_map_lookup_elem(cap_fd, &key, &old_cap) != 0 ||
@@ -227,9 +281,10 @@ refresh_cpu_capacities(struct scx_A1349 *skel,
 	if (force_log || changed) {
 		double sigma = (min_cap > 0) ? (double)max_cap / min_cap : 1.0;
 		printf("scx_A1349: max_cap=%u min_cap=%u sigma=%.3f "
-		       "cost_p=%u cost_e=%u p_cores=%u e_cores=%u (%s)%s\n",
+		       "cost_p=%u cost_e=%u p_cores=%u e_cores=%u (%s, %s)%s\n",
 		       max_cap, min_cap, sigma, cost_p, cost_e, p_cc, e_cc,
 		       (max_cap == min_cap) ? "homogeneous" : "heterogeneous",
+		       cppc ? "acpi_cppc" : "cpu_capacity",
 		       changed ? " [updated]" : "");
 	}
 
@@ -283,17 +338,88 @@ parse_u32(const char *s, __u32 *out)
 	return true;
 }
 
+enum {
+	OPT_SLICE_US = 256,
+	OPT_SLICE_E_PCT,
+	OPT_BUDGET_MUL,
+	OPT_REPLENISH_DIV,
+	OPT_STARVE_FLOOR,
+	OPT_STARVED_WAIT,
+	OPT_CLUSTER_WAIT,
+	OPT_WBAR_DEN,
+	OPT_IDLE_PICK,
+};
+
+static const struct option long_opts[] = {
+	{ "slice-us",      required_argument, NULL, OPT_SLICE_US },
+	{ "slice-e-pct",   required_argument, NULL, OPT_SLICE_E_PCT },
+	{ "budget-mul",    required_argument, NULL, OPT_BUDGET_MUL },
+	{ "replenish-div", required_argument, NULL, OPT_REPLENISH_DIV },
+	{ "starve-floor",  required_argument, NULL, OPT_STARVE_FLOOR },
+	{ "starved-wait",  required_argument, NULL, OPT_STARVED_WAIT },
+	{ "cluster-wait",  required_argument, NULL, OPT_CLUSTER_WAIT },
+	{ "wbar-den",      required_argument, NULL, OPT_WBAR_DEN },
+	{ "idle-pick",     required_argument, NULL, OPT_IDLE_PICK },
+	{ "help",          no_argument,       NULL, 'h' },
+	{ NULL, 0, NULL, 0 },
+};
+
+struct knobs {
+	__u32 slice_us;
+	__u32 slice_e_pct;
+	__u32 budget_mul;
+	__u32 replenish_div;
+	__u32 starve_floor_pct;
+	__u32 starved_wait_slices;
+	__u32 cluster_wait_slices;
+	__u32 w_bar_ewma_den;
+	__u32 idle_pick;
+};
+
+static const char *const idle_pick_names[] = {
+	[IDLE_PICK_PSCAN] = "pscan",
+	[IDLE_PICK_CORE]  = "core",
+};
+
+static void
+apply_knobs(struct scx_A1349 *skel, const struct knobs *k)
+{
+	skel->rodata->slice_p_ns          = (__u64)k->slice_us * 1000;
+	skel->rodata->slice_e_pct         = k->slice_e_pct;
+	skel->rodata->budget_mul          = k->budget_mul;
+	skel->rodata->replenish_div       = k->replenish_div;
+	skel->rodata->starve_floor_pct    = k->starve_floor_pct;
+	skel->rodata->starved_wait_slices = k->starved_wait_slices;
+	skel->rodata->cluster_wait_slices = k->cluster_wait_slices;
+	skel->rodata->w_bar_ewma_den      = k->w_bar_ewma_den;
+	skel->rodata->idle_pick           = k->idle_pick;
+}
+
 static void
 usage(const char *prog)
 {
 	fprintf(stderr,
-		"Usage: %s [-p COST_P] [-e COST_E] [-d DELTA] [-v] [-h]\n"
+		"Usage: %s [-p COST_P] [-e COST_E] [-d DELTA] [-v] [-h] [OPTIONS]\n"
 		"\n"
 		"  -p COST_P   per-quantum cost on P-core (default %u)\n"
 		"  -e COST_E   per-quantum cost on E-core (default: auto-derive\n"
 		"              cost_p * min_cap / max_cap to keep γ = σ)\n"
 		"  -d DELTA    MDP discount factor δ ∈ (0,1) (default 0.98)\n"
 		"  -v          print event counters every 5 s (always on exit)\n"
+		"\n"
+		"  --slice-us N       P-core slice and length quantum, µs (default %u)\n"
+		"  --slice-e-pct N    E-core slice, %% of the P slice (default %u)\n"
+		"  --budget-mul N     budget cap B_max = weight · N (default %u)\n"
+		"  --replenish-div N  budget += sleep_ns · weight / N (default %u)\n"
+		"  --starve-floor N   enqueue to STARVED below N %% of B_max,\n"
+		"                     0 disables (default %u)\n"
+		"  --starved-wait N   STARVED head wait bound, P slices (default %u)\n"
+		"  --cluster-wait N   cluster DSQ wait bound, P slices (default %u)\n"
+		"  --wbar-den N       \\bar W EWMA denominator (default %u)\n"
+		"  --idle-pick MODE   wake-up CPU pick: pscan = lowest idle P\n"
+		"                     thread, core = idle P core > idle E core >\n"
+		"                     idle thread, SMT/wake-affine aware\n"
+		"                     (default pscan)\n"
 		"\n"
 		"Pure VCG auction scheduler for heterogeneous CPUs (A1349 s4+).\n"
 		"No virtual time / no EEVDF — tasks ranked by φ_κ = v − c_κ · l\n"
@@ -303,7 +429,11 @@ usage(const char *prog)
 		"dispatch time.  Tasks that cannot afford the payment fall back\n"
 		"to AUCTION_DSQ_STARVED, which is served oldest-first once its\n"
 		"head has waited long enough or the clusters run dry.\n",
-		basename((char *)prog), COST_P_DEF);
+		basename((char *)prog), COST_P_DEF,
+		SLICE_P_US_DEF, SLICE_E_PCT_DEF, BUDGET_MUL_DEF,
+		REPLENISH_DIV_DEF, STARVE_FLOOR_PCT_DEF,
+		STARVED_WAIT_SLICES_DEF, CLUSTER_WAIT_SLICES_DEF,
+		W_BAR_EWMA_DEN_DEF);
 }
 
 int
@@ -321,12 +451,50 @@ main(int argc, char **argv)
 	unsigned int       refresh_tick;
 	__u64              ecode;
 	bool               ejected;
+	struct knobs       k = {
+		.slice_us            = SLICE_P_US_DEF,
+		.slice_e_pct         = SLICE_E_PCT_DEF,
+		.budget_mul          = BUDGET_MUL_DEF,
+		.replenish_div       = REPLENISH_DIV_DEF,
+		.starve_floor_pct    = STARVE_FLOOR_PCT_DEF,
+		.starved_wait_slices = STARVED_WAIT_SLICES_DEF,
+		.cluster_wait_slices = CLUSTER_WAIT_SLICES_DEF,
+		.w_bar_ewma_den      = W_BAR_EWMA_DEN_DEF,
+		.idle_pick           = IDLE_PICK_PSCAN,
+	};
+	__u32             *kp;
 
 	signal(SIGINT,  sigint_handler);
 	signal(SIGTERM, sigint_handler);
 
-	while ((opt = getopt(argc, argv, "p:e:d:vh")) != -1) {
+	while ((opt = getopt_long(argc, argv, "p:e:d:vh", long_opts,
+				  NULL)) != -1) {
 		switch (opt) {
+		case OPT_SLICE_US:      kp = &k.slice_us;            goto knob;
+		case OPT_SLICE_E_PCT:   kp = &k.slice_e_pct;         goto knob;
+		case OPT_BUDGET_MUL:    kp = &k.budget_mul;          goto knob;
+		case OPT_REPLENISH_DIV: kp = &k.replenish_div;       goto knob;
+		case OPT_STARVE_FLOOR:  kp = &k.starve_floor_pct;    goto knob;
+		case OPT_STARVED_WAIT:  kp = &k.starved_wait_slices; goto knob;
+		case OPT_CLUSTER_WAIT:  kp = &k.cluster_wait_slices; goto knob;
+		case OPT_IDLE_PICK:
+			if (!strcmp(optarg, "pscan")) {
+				k.idle_pick = IDLE_PICK_PSCAN;
+			} else if (!strcmp(optarg, "core")) {
+				k.idle_pick = IDLE_PICK_CORE;
+			} else {
+				fprintf(stderr, "Error: bad --idle-pick '%s'.\n",
+					optarg);
+				return 1;
+			}
+			break;
+		case OPT_WBAR_DEN:      kp = &k.w_bar_ewma_den;
+		knob:
+			if (!parse_u32(optarg, kp)) {
+				fprintf(stderr, "Error: bad value '%s'.\n", optarg);
+				return 1;
+			}
+			break;
 		case 'p':
 			if (!parse_u32(optarg, &cost_p)) {
 				fprintf(stderr, "Error: bad -p value '%s'.\n", optarg);
@@ -367,6 +535,15 @@ main(int argc, char **argv)
 			"(got %.6f).\n", delta);
 		return 1;
 	}
+	if (k.slice_us < 100 || !k.slice_e_pct || k.slice_e_pct > 1000 ||
+	    !k.budget_mul || !k.replenish_div || k.starve_floor_pct > 100 ||
+	    !k.starved_wait_slices || !k.cluster_wait_slices ||
+	    !k.w_bar_ewma_den) {
+		fprintf(stderr,
+			"Error: need slice-us >= 100, 0 < slice-e-pct <= 1000, "
+			"starve-floor <= 100, all other knobs > 0.\n");
+		return 1;
+	}
 	if (cost_e_user && (cost_e == 0 || cost_e >= cost_p)) {
 		fprintf(stderr,
 			"Error: need cost_p > cost_e > 0 "
@@ -380,6 +557,7 @@ restart:
 
 	skel->struct_ops.auction_ops->hotplug_seq = scx_hotplug_seq();
 	SCX_ENUM_INIT(skel);
+	apply_knobs(skel, &k);
 
 	SCX_OPS_LOAD(skel, auction_ops, scx_A1349, uei);
 
@@ -397,6 +575,13 @@ restart:
 	printf("scx_A1349: delta=%.4f (table[1]=%.6f, table[%u]=%.6f)\n",
 	       delta, pow(delta, 1.0), MAX_CONTRACT_LENGTH - 1,
 	       pow(delta, (double)(MAX_CONTRACT_LENGTH - 1)));
+	printf("scx_A1349: slice_us=%u slice_e_pct=%u budget_mul=%u "
+	       "replenish_div=%u starve_floor=%u%% starved_wait=%u "
+	       "cluster_wait=%u wbar_den=%u idle_pick=%s\n",
+	       k.slice_us, k.slice_e_pct, k.budget_mul, k.replenish_div,
+	       k.starve_floor_pct, k.starved_wait_slices,
+	       k.cluster_wait_slices, k.w_bar_ewma_den,
+	       idle_pick_names[k.idle_pick]);
 
 	link = SCX_OPS_ATTACH(skel, auction_ops, scx_A1349);
 

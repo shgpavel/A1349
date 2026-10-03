@@ -20,6 +20,20 @@
 /* Default per-quantum P-core cost c_P. */
 #define COST_P_DEF          1024u
 
+#define SLICE_P_US_DEF          20000u
+#define SLICE_E_PCT_DEF         150u
+#define BUDGET_MUL_DEF          16u
+#define REPLENISH_DIV_DEF       6000000u
+#define STARVE_FLOOR_PCT_DEF    10u
+#define STARVED_WAIT_SLICES_DEF 5u
+#define CLUSTER_WAIT_SLICES_DEF 25u
+#define W_BAR_EWMA_DEN_DEF      16u
+
+enum idle_pick_mode {
+	IDLE_PICK_PSCAN,
+	IDLE_PICK_CORE,
+};
+
 /*
  * Userspace-owned configuration (RO from BPF).  Refreshed periodically by
  * the loader.  No estimator state lives here.
