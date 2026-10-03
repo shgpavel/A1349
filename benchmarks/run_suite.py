@@ -27,7 +27,7 @@ DEFAULT_LEVELS = ["light", "moderate", "stress"]
 # Rust schedulers attach as "<name>_<version>[_g<sha>]_<target triple>"
 # (e.g. "lavd_1.0.13_..."); collect.py accepts "<name>" plus any "_<suffix>".
 SCHEDULERS = [
-    #("default", None, None),
+    ("default", None, None),
     #("scx_EEVDF", "impl/scx_EEVDF/build/scheds/c/scx_eevdf", "eevdf"),
     #("LAVD", None, "lavd"),  # binary filled in from --lavd-bin
     ("scx_A1349", "impl/scx_A1349/build/scheds/c/scx_A1349", "scx_A1349"),
